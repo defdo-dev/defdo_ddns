@@ -83,7 +83,7 @@ defmodule Defdo.Cloudflare.Monitor do
     result =
       if result == [] do
         message = "💤 Nothing to do"
-        Logger.info(message,  ansi_color: :blue)
+        Logger.info(message, ansi_color: :blue)
 
         [message]
       else
