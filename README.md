@@ -67,9 +67,7 @@ and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/defdo_ddns>.
 
 
-# Another way to contrib (México Only)
-
-> If you love the open-source as we, or you only are tired for your current Mobile Services Provider, and you are from Mexico, we are building a brand who is focus on you [check it now](https://shop.defdo.dev/?dcode=defdo_ddns&scode=github), We love that you are joining us.
+# Another way to contrib (Mexico Only)
 
 > If you love the open-source as we do, or you are tired of your current Mobile Services Provider, or maybe you want to help us grow. One of our goals is to contribute with persons that share our feelings, making a win-win. We are building a telephony brand in Mexico focused on developers. Want to learn with us? Join the [defdo](https://shop.defdo.dev/?dcode=defdo_ddns&scode=github) community, and enjoy not only the telephony!.
 
