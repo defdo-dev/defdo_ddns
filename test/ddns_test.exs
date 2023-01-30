@@ -5,7 +5,7 @@ defmodule Defdo.DDNSTest do
 
   test "get config dns records to be monitored" do
     Application.put_env(:defdo_ddns, Cloudflare, domain: "defdo.de", subdomains: "h,h.defdo.de h")
-    assert DDNS.monitoring_records() == ["defdo.de", "h.defdo.de"]
+    assert DDNS.records_to_monitor("defdo.de") == ["defdo.de", "h.defdo.de"]
   end
 
   test "get the cloudflare application key" do

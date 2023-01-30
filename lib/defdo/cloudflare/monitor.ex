@@ -52,15 +52,27 @@ defmodule Defdo.Cloudflare.Monitor do
 
   defp execute_monitor do
     Logger.info("🏪 Executing the checkup...", ansi_color: :magenta)
-    domain = get_cloudflare_key(:domain)
+    get_cloudflare_config_domains()
+    |> Enum.map(&process/1)
+  end
+
+  defp process(domain) do
+    Logger.info("🏪 #{domain}", ansi_color: :blue)
     local_ip = get_current_ip()
     zone_id = get_zone_id(domain)
 
     # obtained by Application config
-    dns_records_to_monitor = monitoring_records() |> Enum.join(",")
+    # retrieves the subdomains to be monitored
+    dns_records_to_monitor =
+      domain
+      |> records_to_monitor()
+      |> Enum.join(",")
 
-    # records from cloudflare
-    online_dns_records = list_dns_records(zone_id, name: dns_records_to_monitor)
+    # records from cloudflare currently focus on A records or AAAA.
+    online_dns_records =
+      zone_id
+      |> list_dns_records(name: dns_records_to_monitor)
+      |> Enum.filter(& &1["type"] in ~w(A AAAA))
 
     result =
       online_dns_records
@@ -72,7 +84,7 @@ defmodule Defdo.Cloudflare.Monitor do
           if success do
             {"✅ Success - #{result["modified_on"]} new ip updated!", ansi_color: :green}
           else
-            {"❌ error - #{inspect(result)}", ansi_color: :red}
+            {"❌ error - #{inspect(input)}", ansi_color: :red}
           end
 
         Logger.info(message, color)

@@ -17,18 +17,11 @@ defmodule Defdo.Cloudflare.DDNS do
   @spec get_current_ip :: String.t()
   def get_current_ip do
     key = "ip"
-    cloudflare_trace = "https://www.cloudflare.com/cdn-cgi/trace"
 
     {^key, current_ip} =
-      Req.get!(cloudflare_trace).body
-      |> String.split("\n")
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.map(fn str ->
-        [key, value] = String.split(str, "=")
-        {key, value}
-      end)
-      |> Enum.filter(fn {k, _value} -> k == key end)
-      |> List.first()
+      "https://www.cloudflare.com/cdn-cgi/trace"
+      |> Req.get()
+      |> parse_cl_trace(key)
 
     current_ip
   end
@@ -130,33 +123,45 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   @doc """
-  Retrieve the records defined defined for the Application
+  Retrieve the records to be used to monitor.
   """
-  def monitoring_records do
-    monitor_base_domain = get_cloudflare_key(:domain, true)
-    domain = get_cloudflare_key(:domain)
+  def records_to_monitor(domain) do
+    [domain | get_subdomains_for(domain)]
+  end
 
-    subdomains =
-      :subdomains
-      |> get_cloudflare_key()
-      |> String.split(~r/(,|\s)/)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.map(fn subdomain ->
-        if String.contains?(subdomain, domain) do
-          subdomain
-        else
-          "#{subdomain}.#{domain}"
-        end
-      end)
-      |> Enum.uniq()
+  def get_subdomains_for(domain, subdomains \\ get_cloudflare_config_subdomains()) when is_list(subdomains) do
+    subdomains
+    |> Enum.map(fn subdomain ->
+      maybe_concatenate_domain(subdomain, domain)
+    end)
+    |> Enum.uniq()
+    |> Enum.reject(& &1 == :no_related)
+  end
 
-    if monitor_base_domain do
-      [domain | subdomains]
+  defp subdomain_belongs_to_domain?(subdomain, domain) do
+    String.contains?(subdomain, domain)
+  end
+
+  defp maybe_concatenate_domain(subdomain, domain) do
+    if subdomain_belongs_to_domain?(subdomain, domain) do
+      subdomain
     else
-      subdomains
+      if !String.contains?(subdomain, ".") do
+        "#{subdomain}.#{domain}"
+      else
+        :no_related
+      end
     end
   end
 
+  @doc """
+  By parsing the Application config retrieves a list of domains defined.
+  """
+  def get_cloudflare_config_domains(domain \\ get_cloudflare_key(:domain))
+  def get_cloudflare_config_domains(domain) when not is_nil(domain) do
+    parse_string_config(domain)
+  end
+  def get_cloudflare_config_domains(_), do: []
   @doc """
   Get the key from the the Application.
   """
@@ -164,5 +169,41 @@ defmodule Defdo.Cloudflare.DDNS do
   def get_cloudflare_key(key, default \\ "") do
     Application.get_env(:defdo_ddns, Cloudflare)
     |> Keyword.get(key, default)
+  end
+
+  @doc """
+  By parsing the Application config retrieves a list of domains defined.
+  """
+  def get_cloudflare_config_subdomains(subdomain \\ get_cloudflare_key(:subdomains))
+  def get_cloudflare_config_subdomains(subdomain) when subdomain not in [nil, ""] do
+    parse_string_config(subdomain)
+    # |> Enum.reject(&(&1 == ""))
+  end
+  def get_cloudflare_config_subdomains(_), do: []
+
+  defp parse_string_config(string) do
+    case String.split(string, ~r/(,|\s)/, trim: true) do
+      [] ->
+        Logger.info("Can't parse the config, it must separate with , or space", ansi_color: :yellow)
+        {:error, :missing_config}
+      list when is_list(list) ->
+        list
+    end
+  end
+
+  defp parse_cl_trace({:ok, %Req.Response{body: body, status: 200}}, key) do
+    body
+    |> String.split("\n")
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(fn str ->
+      [key, value] = String.split(str, "=")
+      {key, value}
+    end)
+    |> Enum.filter(fn {k, _value} -> k == key end)
+    |> List.first()
+  end
+
+  defp parse_cl_trace(_, "ip") do
+    {"ip", "127.0.0.1"}
   end
 end
