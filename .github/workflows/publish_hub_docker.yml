@@ -69,6 +69,11 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Set up QEMU for multi-arch
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: linux/amd64,linux/arm64
+
       - name: Install Earthly v8
         run: |
           [[ ! -f /usr/local/bin/earthly ]] && \
@@ -76,4 +81,4 @@ jobs:
 
       - name: Build and push all platforms with Earthly
         run: |
-          earthly +build-all-platforms
+          earthly --ci --push +build-all-platforms 
