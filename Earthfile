@@ -1,22 +1,11 @@
-VERSION 0.6
-ARG REPO=paridin/defdo_ddns
-ARG MIX_ENV=prod
-ARG RELEASE=defdo_ddns
-ARG ALPINE_BUILD=3.16.0
-ARG ALPINE_RELEASE=3.16.0
+VERSION 0.8
 
 os-deps:
   ARG TARGETPLATFORM
-  ARG ELIXIR=1.13.4
-  ARG OTP=24.3.4.2
+  ARG ELIXIR=1.18.4
+  ARG OTP=28.0.1
+  ARG ALPINE_BUILD=3.22.0
   FROM --platform=$TARGETPLATFORM hexpm/elixir:$ELIXIR-erlang-$OTP-alpine-$ALPINE_BUILD
-  # In the following line we require a git because our repository has git dependencies.
-  # also build-base because we use argon2 which requires a compile toolchain.
-  # if you don't require them, you can remove it.
-  # It will speed the build process because we don fetched the dependencies.
-  # We will see on the log from the RUN command how many packages are instaled and most of them come from build-base
-  # g++, make. ca-certificates among others.
-  # to learn more about read the next post <#TODO create a document to explain it>.
   RUN apk add --no-progress --update git build-base
 
 deps:
@@ -36,6 +25,8 @@ deps:
   SAVE ARTIFACT deps /deps
 
 release:
+  ARG RELEASE=defdo_ddns
+  ARG MIX_ENV=prod
   FROM +deps
   COPY +deps/deps deps
   COPY lib lib
@@ -48,6 +39,8 @@ build-all-platforms:
 
 docker:
   ARG TARGETPLATFORM
+  ARG REPO=paridin/defdo_ddns
+  ARG ALPINE_RELEASE=3.22.0
   FROM --platform=$TARGETPLATFORM alpine:${ALPINE_RELEASE}
   WORKDIR /opt/app
   RUN apk upgrade --update && \
@@ -57,8 +50,8 @@ docker:
     curl \
     # from elixir 1.12 otp 24 glib is required because the JIT.
     libgcc libstdc++ ncurses-libs \
-    openssl-dev && \ 
-    rm -rf /var/cache/apk/*  
+    openssl-dev && \
+    rm -rf /var/cache/apk/*
   # configure timezone https://wiki.alpinelinux.org/wiki/Setting_the_timezone
   RUN cp /usr/share/zoneinfo/America/Mexico_City /etc/localtime && \
     echo "America/Mexico_City " > /etc/timezone && \
