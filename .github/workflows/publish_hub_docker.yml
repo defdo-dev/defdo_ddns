@@ -1,4 +1,4 @@
-name: Elixir CI
+name: Elixir CI and Docker Build
 
 on: push
 
@@ -21,14 +21,14 @@ jobs:
     strategy:
       matrix:
         otp: ['28']
-        elixir: ['1.18']
+        elixir: ['1.18.4']
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{matrix.otp}}
           elixir-version: ${{matrix.elixir}}
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         id: cache
         with:
           path: |
