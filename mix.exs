@@ -30,7 +30,10 @@ defmodule Defdo.DDNS.MixProject do
   defp deps do
     [
       {:jason, "~> 1.3"},
-      {:req, "~> 0.5.0"}
+      {:req, "~> 0.5.0"},
+      # Testing dependencies
+      {:mox, "~> 1.0", only: :test},
+      {:bypass, "~> 2.1", only: :test}
     ]
   end
 end
