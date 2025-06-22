@@ -1,73 +1,180 @@
-# Defdo.DDNS
+# 🏠 Defdo DDNS - Simple Dynamic DNS for Home Labs
 
-Yes, this is another DDNS project, We don't want to reinvent the wheel, but the options out there were not working properly, and because we need to fix the issue asap, we choose to build another choice.
+> **Keep your home server accessible even when your IP address changes!**
 
-If you want we improve the solution please feel free to give us feedback or make a PR.
+Defdo DDNS automatically updates your Cloudflare DNS records when your home internet IP address changes. Perfect for home labs, self-hosted services, and remote access.
 
-### Why?
+## 🤔 What Problem Does This Solve?
 
-We have a home lab, and our `IP` is not static; our domain is at Cloudflare, and they provide an API to update the `DNS` records.
+**The Problem**: Your home internet provider gives you a dynamic IP address that changes periodically. This breaks access to your home servers, security cameras, or self-hosted applications.
 
-We have a `UDM Pro` router which uses [unifios-utilities](https://github.com/unifi-utilities/unifios-utilities) to preserve data after reboot. We know that `UDM Pro` uses `podman` to run docker images.
+**The Solution**: Defdo DDNS monitors your IP address and automatically updates your domain's DNS records in Cloudflare whenever it changes.
 
-We create this project with the goal of
- * Use elixir since it is our primary language.
- * We want a `GenServer` to keep monitoring when the `IP` changes to update the `DNS` records.
- * We must create a multi-platform docker image to be deployed with `podman` on our `UDM Pro` because it runs 24 x 7.
+### ✨ Key Features
 
-## Using it
+- 🔄 **Automatic IP monitoring** - Checks every 5 minutes by default
+- 🌐 **Multiple domain support** - Handle multiple domains and subdomains
+- 🚀 **Auto-creation** - Creates missing DNS records automatically
+- 🐳 **Docker ready** - Easy deployment with Docker/Podman
+- 📝 **Smart logging** - Clear status updates and error messages
+- ⚡ **Lightweight** - Built with Elixir for reliability and performance
 
-For our use case we put the script at `/mnt/data/on_boot.d/30-defdo-ddns.sh`.
+## 🚀 Quick Start
 
-```bash
-vi /mnt/data/on_boot.d/30-defdo-ddns.sh
+### Prerequisites
+
+1. **Domain managed by Cloudflare** (free account works fine)
+2. **Cloudflare API Token** with DNS edit permissions
+3. **Docker or Podman** installed on your system
+
+### Step 1: Get Your Cloudflare API Token
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens)
+2. Click "Create Token"
+3. Use the "Custom token" template
+4. Set permissions:
+   - **Zone** → **Zone** → **Read**
+   - **Zone** → **DNS** → **Edit**
+5. Set zone resources to include your domain
+6. Copy the generated token
+
+### Step 2: Configure Your Domains
+
+Create your domain mapping string in this format:
+```
+domain1.com:subdomain1,subdomain2;domain2.com:api,blog
 ```
 
-The content of the script looks like
+**Examples**:
+- Root domain only: `example.com:`
+- With subdomains: `example.com:www,api,blog`
+- Multiple domains: `example.com:www,api;mysite.org:home,server`
+
+### Step 3: Run with Docker
+
+```bash
+docker run -d \
+  --name defdo-ddns \
+  --restart unless-stopped \
+  -e CLOUDFLARE_API_TOKEN="your_token_here" \
+  -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
+  -e AUTO_CREATE_DNS_RECORDS="true" \
+  paridin/defdo_ddns
+```
+
+### Step 4: Verify It's Working
+
+Check the logs to see if it's working:
+```bash
+docker logs defdo-ddns
+```
+
+You should see messages like:
+```
+🏪 Executing the checkup...
+🏪 example.com
+✅ Success - www.example.com dns record change to a new ip 203.0.113.1
+🏪 checkup completed!
+```
+
+## ⚙️ Configuration Options
+
+| Environment Variable | Required | Default | Description |
+|---------------------|----------|---------|-------------|
+| `CLOUDFLARE_API_TOKEN` | ✅ Yes | - | Your Cloudflare API token |
+| `CLOUDFLARE_DOMAIN_MAPPINGS` | ✅ Yes | - | Domain to subdomain mappings |
+| `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
+
+## 📋 Advanced Usage
+
+### For UniFi Dream Machine Pro Users
+
+Create a startup script at `/mnt/data/on_boot.d/30-defdo-ddns.sh`:
 
 ```bash
 #!/bin/sh
 CONTAINER=defdo-ddns
 
-# Starts a defdo ddns container that is deleted after it is stopped.
 if podman container exists "$CONTAINER"; then
   podman start "$CONTAINER"
 else
-  podman run -i -d --rm \
+  podman run -d --rm \
     --net=host \
     --name "$CONTAINER" \
     --security-opt=no-new-privileges \
-    -e CLOUDFLARE_API_TOKEN=<REPLACE_WITH_YOUR_TOKEN> \
-    -e CLOUDFLARE_DOMAIN=<YOUR_DOMAIN> \
-    -e CLOUDFLARE_SUBDOMAINS=<YOUR_SUBDOMAINS_COMMA_SEPARATED> \
+    -e CLOUDFLARE_API_TOKEN="your_token_here" \
+    -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
+    -e AUTO_CREATE_DNS_RECORDS="true" \
     paridin/defdo_ddns
 fi
 ```
-Remember to update the environment variables.
 
-# What is next?
-
- - [ ] Deliver a notification if the update is not possible.
-
-## Contributing to this project
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `defdo_ddns` to your list of dependencies in `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:defdo_ddns, "~> 0.1.0"}
-  ]
-end
+Make it executable:
+```bash
+chmod +x /mnt/data/on_boot.d/30-defdo-ddns.sh
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/defdo_ddns>.
+### Docker Compose
 
+```yaml
+version: '3.8'
+services:
+  defdo-ddns:
+    image: paridin/defdo_ddns
+    container_name: defdo-ddns
+    restart: unless-stopped
+    environment:
+      - CLOUDFLARE_API_TOKEN=your_token_here
+      - CLOUDFLARE_DOMAIN_MAPPINGS=example.com:www,api
+      - AUTO_CREATE_DNS_RECORDS=true
+```
 
-# Another way to contrib (Mexico Only)
+## 🔧 Troubleshooting
 
-> If you love the open-source as we do, or you are tired of your current Mobile Services Provider, or maybe you want to help us grow. One of our goals is to contribute with persons that share our feelings, making a win-win. We are building a telephony brand in Mexico focused on developers. Want to learn with us? Join the [defdo](https://shop.defdo.dev/?dcode=defdo_ddns&scode=github) community, and enjoy not only the telephony!.
+### Common Issues
+
+**❌ "DNS record not found"**
+- Enable `AUTO_CREATE_DNS_RECORDS=true` to create missing records automatically
+- Or manually create A records in Cloudflare dashboard
+
+**❌ "Authentication failed"**
+- Verify your API token has correct permissions
+- Check token hasn't expired
+
+**❌ "Zone not found"**
+- Ensure domain is added to your Cloudflare account
+- Verify domain spelling in configuration
+
+### Getting Help
+
+Check logs for detailed error messages:
+```bash
+docker logs defdo-ddns --follow
+```
+
+## 🛣️ Roadmap
+
+- [ ] Web dashboard for monitoring
+- [ ] Webhook notifications
+- [ ] Support for other DNS providers
+- [ ] IPv6 support
+- [ ] Health check endpoint
+
+## 🤝 Contributing
+
+We welcome contributions! Please feel free to:
+- Report bugs
+- Suggest features
+- Submit pull requests
+- Improve documentation
+
+## 📄 License
+
+This project is open source. Feel free to use it for personal and commercial projects.
+
+---
+
+## 🇲🇽 Support Our Mission (Mexico Only)
+
+If you love open source and want to support our work, consider joining our developer-focused mobile service in Mexico: [defdo community](https://shop.defdo.dev/?dcode=defdo_ddns&scode=github). Help us grow while getting great mobile service!
 

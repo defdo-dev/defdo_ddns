@@ -55,7 +55,11 @@ defmodule Defdo.Cloudflare.DDNS do
 
   use the params to filter the result and get only which are interested
 
-      iex> Defdo.Cloudflare.DDNS.list_dns_records(zone_id, [name: "defdo.de,h.defdo.de"])
+  Note: As of 2025-02-21, Cloudflare deprecated comma-separated name filtering.
+  Use separate API calls for multiple DNS records.
+
+      iex> Defdo.Cloudflare.DDNS.list_dns_records(zone_id, [name: "defdo.de"])
+      iex> Defdo.Cloudflare.DDNS.list_dns_records(zone_id, [name: "h.defdo.de"])
   """
   @spec list_dns_records(String.t(), list()) :: list()
   def list_dns_records(zone_id, params \\ []) do
@@ -66,7 +70,7 @@ defmodule Defdo.Cloudflare.DDNS do
         params: params
       ).body
 
-    if Map.has_key?(body_response, "result") do
+    if Map.has_key?(body_response, "result") && not is_nil(body_response["result"]) do
       body_response["result"]
     else
       errors = body_response["errors"]
@@ -85,6 +89,35 @@ defmodule Defdo.Cloudflare.DDNS do
         "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
         headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
         body: body
+      ).body
+
+    if Map.has_key?(body_response, "result") do
+      {body_response["success"], body_response["result"]}
+    else
+      errors = body_response["errors"]
+      Logger.error(["🛑 ", inspect(errors)])
+      {body_response["success"], nil}
+    end
+  end
+
+  @doc """
+  Creates a new DNS record in Cloudflare with a promotional comment.
+  """
+  @spec create_dns_record(String.t(), map()) :: tuple()
+  def create_dns_record(zone_id, record_data) do
+    # Add promotional comment to the record
+    app_name = Application.get_application(__MODULE__) |> to_string()
+
+    comment =
+      "Created using #{app_name}, want to contribute? Visit https://shop.defdo.dev and subscribe (only MX)"
+
+    record_with_comment = Map.put(record_data, "comment", comment)
+
+    body_response =
+      Req.post!(
+        "#{@zone_endpoint}/#{zone_id}/dns_records",
+        headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
+        body: Jason.encode!(record_with_comment)
       ).body
 
     if Map.has_key?(body_response, "result") do
@@ -123,50 +156,53 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   @doc """
-  Retrieve the records to be used to monitor.
+  Retrieve the records to be used to monitor for a specific domain.
   """
   def records_to_monitor(domain) do
-    [domain | get_subdomains_for(domain)]
+    [domain | get_subdomains_for_domain(domain)]
   end
 
-  def get_subdomains_for(domain, subdomains \\ get_cloudflare_config_subdomains()) when is_list(subdomains) do
-    subdomains
-    |> Enum.map(fn subdomain ->
-      maybe_concatenate_domain(subdomain, domain)
-    end)
-    |> Enum.uniq()
-    |> Enum.reject(& &1 == :no_related)
-  end
+  @doc """
+  Get subdomains specifically configured for a domain.
+  """
+  def get_subdomains_for_domain(domain) do
+    domain_mappings = get_cloudflare_key(:domain_mappings, %{})
 
-  defp subdomain_belongs_to_domain?(subdomain, domain) do
-    String.contains?(subdomain, domain)
-  end
+    case Map.get(domain_mappings, domain) do
+      nil ->
+        Logger.warning("No subdomains configured for domain: #{domain}", ansi_color: :yellow)
+        []
 
-  defp maybe_concatenate_domain(subdomain, domain) do
-    if subdomain_belongs_to_domain?(subdomain, domain) do
-      subdomain
-    else
-      if !String.contains?(subdomain, ".") do
-        "#{subdomain}.#{domain}"
-      else
-        :no_related
-      end
+      subdomains when is_list(subdomains) ->
+        subdomains
+        |> Enum.map(fn subdomain ->
+          if String.contains?(subdomain, ".") do
+            # Already a full domain
+            subdomain
+          else
+            # Append to parent domain
+            "#{subdomain}.#{domain}"
+          end
+        end)
+        |> Enum.uniq()
     end
   end
 
   @doc """
-  By parsing the Application config retrieves a list of domains defined.
+  Get all configured domains from domain mappings.
   """
-  def get_cloudflare_config_domains(domain \\ get_cloudflare_key(:domain))
-  def get_cloudflare_config_domains(domain) when not is_nil(domain) do
-    parse_string_config(domain)
+  def get_cloudflare_config_domains do
+    domain_mappings = get_cloudflare_key(:domain_mappings, %{})
+    Map.keys(domain_mappings)
   end
-  def get_cloudflare_config_domains(_), do: []
+
   @doc """
   Get the key from the the Application.
   """
-  @spec get_cloudflare_key(atom()) :: String.t()
-  def get_cloudflare_key(key, default \\ "") do
+  @spec get_cloudflare_key(atom(), any()) :: any()
+  def get_cloudflare_key(key, default \\ "")
+
+  def get_cloudflare_key(key, default) do
     Application.get_env(:defdo_ddns, Cloudflare)
     |> Keyword.get(key, default)
   end
@@ -175,17 +211,23 @@ defmodule Defdo.Cloudflare.DDNS do
   By parsing the Application config retrieves a list of domains defined.
   """
   def get_cloudflare_config_subdomains(subdomain \\ get_cloudflare_key(:subdomains))
+
   def get_cloudflare_config_subdomains(subdomain) when subdomain not in [nil, ""] do
     parse_string_config(subdomain)
     # |> Enum.reject(&(&1 == ""))
   end
+
   def get_cloudflare_config_subdomains(_), do: []
 
   defp parse_string_config(string) do
     case String.split(string, ~r/(,|\s)/, trim: true) do
       [] ->
-        Logger.info("Can't parse the config, it must separate with , or space", ansi_color: :yellow)
+        Logger.info("Can't parse the config, it must separate with , or space",
+          ansi_color: :yellow
+        )
+
         {:error, :missing_config}
+
       list when is_list(list) ->
         list
     end
