@@ -5,14 +5,20 @@ defmodule Defdo.Cloudflare.DDNSTest do
 
   describe "configuration parsing" do
     test "get_subdomains_for_domain/1 returns correct subdomains" do
-      Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{
-        "example.com" => ["www", "api"],
-        "test.com" => []
-      })
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "example.com" => ["www", "api"],
+          "test.com" => []
+        }
+      )
 
-      assert DDNS.get_subdomains_for_domain("example.com") == ["www.example.com", "api.example.com"]
+      assert DDNS.get_subdomains_for_domain("example.com") == [
+               "www.example.com",
+               "api.example.com"
+             ]
+
       assert DDNS.get_subdomains_for_domain("test.com") == []
-      
+
       # Capture log output to suppress expected warning for nonexistent domain
       ExUnit.CaptureLog.capture_log(fn ->
         assert DDNS.get_subdomains_for_domain("nonexistent.com") == []
@@ -20,10 +26,12 @@ defmodule Defdo.Cloudflare.DDNSTest do
     end
 
     test "get_cloudflare_config_domains/0 returns all configured domains" do
-      Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{
-        "example.com" => ["www"],
-        "test.org" => ["api", "cdn"]
-      })
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "example.com" => ["www"],
+          "test.org" => ["api", "cdn"]
+        }
+      )
 
       domains = DDNS.get_cloudflare_config_domains()
       assert "example.com" in domains
@@ -32,24 +40,28 @@ defmodule Defdo.Cloudflare.DDNSTest do
     end
 
     test "get_cloudflare_key/1 retrieves configuration values" do
-      Application.put_env(:defdo_ddns, Cloudflare, 
+      Application.put_env(:defdo_ddns, Cloudflare,
         api_token: "test_token",
         domain_mappings: %{"example.com" => ["www"]},
-        auto_create_missing_records: true
+        auto_create_missing_records: true,
+        proxy_a_records: true
       )
 
       assert DDNS.get_cloudflare_key(:api_token) == "test_token"
       assert DDNS.get_cloudflare_key(:domain_mappings) == %{"example.com" => ["www"]}
       assert DDNS.get_cloudflare_key(:auto_create_missing_records) == true
+      assert DDNS.get_cloudflare_key(:proxy_a_records) == true
       assert DDNS.get_cloudflare_key(:nonexistent_key) == ""
     end
   end
 
   describe "records_to_monitor/1" do
     test "includes domain and all subdomains" do
-      Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{
-        "example.com" => ["www", "api", "cdn"]
-      })
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "example.com" => ["www", "api", "cdn"]
+        }
+      )
 
       records = DDNS.records_to_monitor("example.com")
       assert "example.com" in records
@@ -60,9 +72,11 @@ defmodule Defdo.Cloudflare.DDNSTest do
     end
 
     test "handles domain with no subdomains" do
-      Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{
-        "example.com" => []
-      })
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "example.com" => []
+        }
+      )
 
       records = DDNS.records_to_monitor("example.com")
       assert records == ["example.com"]
@@ -70,29 +84,70 @@ defmodule Defdo.Cloudflare.DDNSTest do
 
     test "handles unconfigured domain" do
       Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{})
-      
+
       # Capture log output to suppress expected warning
       ExUnit.CaptureLog.capture_log(fn ->
         records = DDNS.records_to_monitor("unconfigured.com")
         assert records == ["unconfigured.com"]
       end)
     end
+
+    test "expands relative wildcard subdomains to fully-qualified wildcard domains" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "zone-one.example" => ["*.edge", "edge", "gateway"],
+          "zone-two.example" => ["*.app", "app"]
+        }
+      )
+
+      zone_one_records = DDNS.records_to_monitor("zone-one.example")
+      assert "*.edge.zone-one.example" in zone_one_records
+      assert "edge.zone-one.example" in zone_one_records
+      assert "gateway.zone-one.example" in zone_one_records
+
+      zone_two_records = DDNS.records_to_monitor("zone-two.example")
+      assert "*.app.zone-two.example" in zone_two_records
+      assert "app.zone-two.example" in zone_two_records
+    end
   end
 
   describe "input_for_update_dns_records/2" do
     test "filters records that need IP updates and transforms for update" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
+
       dns_records = [
-        %{"name" => "example.com", "id" => "1", "content" => "1.1.1.1", "type" => "A", "ttl" => 300, "proxied" => false},
-        %{"name" => "www.example.com", "id" => "2", "content" => "2.2.2.2", "type" => "A", "ttl" => 300, "proxied" => false},
-        %{"name" => "api.example.com", "id" => "3", "content" => "3.3.3.3", "type" => "A", "ttl" => 300, "proxied" => false}
+        %{
+          "name" => "example.com",
+          "id" => "1",
+          "content" => "1.1.1.1",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        },
+        %{
+          "name" => "www.example.com",
+          "id" => "2",
+          "content" => "2.2.2.2",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        },
+        %{
+          "name" => "api.example.com",
+          "id" => "3",
+          "content" => "3.3.3.3",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
       ]
-      
+
       local_ip = "3.3.3.3"
       result = DDNS.input_for_update_dns_records(dns_records, local_ip)
-      
+
       # Should filter out records that already have the correct IP
       assert length(result) == 2
-      
+
       # Check that the result contains tuples with record ID and JSON body
       assert Enum.any?(result, fn {id, _body} -> id == "1" end)
       assert Enum.any?(result, fn {id, _body} -> id == "2" end)
@@ -100,17 +155,177 @@ defmodule Defdo.Cloudflare.DDNSTest do
     end
 
     test "handles empty DNS records list" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
       result = DDNS.input_for_update_dns_records([], "1.2.3.4")
       assert result == []
     end
 
     test "returns empty list when all records have correct IP" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
+
       dns_records = [
-        %{"name" => "example.com", "id" => "1", "content" => "1.2.3.4", "type" => "A", "ttl" => 300, "proxied" => false}
+        %{
+          "name" => "example.com",
+          "id" => "1",
+          "content" => "1.2.3.4",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
       ]
-      
+
       result = DDNS.input_for_update_dns_records(dns_records, "1.2.3.4")
       assert result == []
+    end
+
+    test "forces proxied mode when proxy_a_records is enabled" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      dns_records = [
+        %{
+          "name" => "example.com",
+          "id" => "1",
+          "content" => "9.9.9.9",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      [{"1", body}] = DDNS.input_for_update_dns_records(dns_records, "1.1.1.1")
+      assert %{"proxied" => true, "ttl" => 1} = Jason.decode!(body)
+    end
+
+    test "updates record when IP is already correct but proxy is disabled" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      dns_records = [
+        %{
+          "name" => "example.com",
+          "id" => "1",
+          "content" => "1.1.1.1",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      [{"1", body}] = DDNS.input_for_update_dns_records(dns_records, "1.1.1.1")
+      assert %{"content" => "1.1.1.1", "proxied" => true, "ttl" => 1} = Jason.decode!(body)
+    end
+
+    test "skips update when IP and proxy state are already correct" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      dns_records = [
+        %{
+          "name" => "example.com",
+          "id" => "1",
+          "content" => "1.1.1.1",
+          "type" => "A",
+          "ttl" => 1,
+          "proxied" => true
+        }
+      ]
+
+      assert DDNS.input_for_update_dns_records(dns_records, "1.1.1.1") == []
+    end
+
+    test "skips duplicate updates when one record is already in desired state" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      dns_records = [
+        %{
+          "name" => "*.edge.zone-one.example",
+          "id" => "good",
+          "content" => "203.0.113.11",
+          "type" => "A",
+          "ttl" => 1,
+          "proxied" => true
+        },
+        %{
+          "name" => "*.edge.zone-one.example",
+          "id" => "stale",
+          "content" => "203.0.113.10",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert DDNS.input_for_update_dns_records(dns_records, "203.0.113.11") == []
+        end)
+
+      assert log =~ "Duplicate DNS records detected for A *.edge.zone-one.example"
+      assert log =~ "stale"
+    end
+
+    test "updates only one record when multiple duplicates need changes" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      dns_records = [
+        %{
+          "name" => "*.edge.zone-one.example",
+          "id" => "first",
+          "content" => "203.0.113.10",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        },
+        %{
+          "name" => "*.edge.zone-one.example",
+          "id" => "second",
+          "content" => "203.0.113.12",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          result = DDNS.input_for_update_dns_records(dns_records, "203.0.113.11")
+          assert length(result) == 1
+
+          [{"first", body}] = result
+
+          assert %{"content" => "203.0.113.11", "proxied" => true, "ttl" => 1} =
+                   Jason.decode!(body)
+        end)
+
+      assert log =~ "Duplicate DNS records detected for A *.edge.zone-one.example"
+      assert log =~ "second"
+    end
+  end
+
+  describe "resolve_proxied_value/1" do
+    test "keeps record proxied value by default" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
+
+      assert DDNS.resolve_proxied_value(%{"proxied" => true}) == true
+      assert DDNS.resolve_proxied_value(%{"proxied" => false}) == false
+      assert DDNS.resolve_proxied_value(%{}) == false
+    end
+
+    test "forces proxied true when config is enabled" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
+
+      assert DDNS.resolve_proxied_value(%{"proxied" => false}) == true
+      assert DDNS.resolve_proxied_value(%{}) == true
+    end
+  end
+
+  describe "resolve_ttl/2" do
+    test "uses auto ttl when proxied is enabled" do
+      assert DDNS.resolve_ttl(%{"ttl" => 300}, true) == 1
+      assert DDNS.resolve_ttl(%{}, true) == 1
+    end
+
+    test "keeps record ttl when proxied is disabled" do
+      assert DDNS.resolve_ttl(%{"ttl" => 120}, false) == 120
+      assert DDNS.resolve_ttl(%{}, false) == 300
     end
   end
 

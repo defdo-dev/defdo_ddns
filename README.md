@@ -15,6 +15,7 @@ Defdo DDNS automatically updates your Cloudflare DNS records when your home inte
 - 🔄 **Automatic IP monitoring** - Checks every 5 minutes by default
 - 🌐 **Multiple domain support** - Handle multiple domains and subdomains
 - 🚀 **Auto-creation** - Creates missing DNS records automatically
+- ☁️ **Cloudflare Proxy Mode** - Force `A/AAAA` records to run behind Cloudflare proxy
 - 🐳 **Docker ready** - Easy deployment with Docker/Podman
 - 📝 **Smart logging** - Clear status updates and error messages
 - ⚡ **Lightweight** - Built with Elixir for reliability and performance
@@ -59,6 +60,7 @@ docker run -d \
   -e CLOUDFLARE_API_TOKEN="your_token_here" \
   -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
   -e AUTO_CREATE_DNS_RECORDS="true" \
+  -e CLOUDFLARE_PROXY_A_RECORDS="true" \
   paridin/defdo_ddns
 ```
 
@@ -71,10 +73,10 @@ docker logs defdo-ddns
 
 You should see messages like:
 ```
-🏪 Executing the checkup...
-🏪 example.com
-✅ Success - www.example.com dns record change to a new ip 203.0.113.1
-🏪 checkup completed!
+Executing checkup...
+Processing domain: example.com
+Success - www.example.com DNS record updated to IP 203.0.113.1
+Checkup completed
 ```
 
 ## ⚙️ Configuration Options
@@ -84,6 +86,7 @@ You should see messages like:
 | `CLOUDFLARE_API_TOKEN` | ✅ Yes | - | Your Cloudflare API token |
 | `CLOUDFLARE_DOMAIN_MAPPINGS` | ✅ Yes | - | Domain to subdomain mappings |
 | `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
+| `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
 
 ## 📋 Advanced Usage
 
@@ -105,6 +108,7 @@ else
     -e CLOUDFLARE_API_TOKEN="your_token_here" \
     -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
     -e AUTO_CREATE_DNS_RECORDS="true" \
+    -e CLOUDFLARE_PROXY_A_RECORDS="true" \
     paridin/defdo_ddns
 fi
 ```
@@ -127,6 +131,7 @@ services:
       - CLOUDFLARE_API_TOKEN=your_token_here
       - CLOUDFLARE_DOMAIN_MAPPINGS=example.com:www,api
       - AUTO_CREATE_DNS_RECORDS=true
+      - CLOUDFLARE_PROXY_A_RECORDS=true
 ```
 
 ## 🔧 Troubleshooting
@@ -136,6 +141,9 @@ services:
 **❌ "DNS record not found"**
 - Enable `AUTO_CREATE_DNS_RECORDS=true` to create missing records automatically
 - Or manually create A records in Cloudflare dashboard
+
+**❌ "Hairpin NAT / loopback issues"**
+- Enable `CLOUDFLARE_PROXY_A_RECORDS=true` so records are created/updated with Cloudflare proxy enabled
 
 **❌ "Authentication failed"**
 - Verify your API token has correct permissions
@@ -177,4 +185,3 @@ This project is open source. Feel free to use it for personal and commercial pro
 ## 🇲🇽 Support Our Mission (Mexico Only)
 
 If you love open source and want to support our work, consider joining our developer-focused mobile service in Mexico: [defdo community](https://shop.defdo.dev/?dcode=defdo_ddns&scode=github). Help us grow while getting great mobile service!
-

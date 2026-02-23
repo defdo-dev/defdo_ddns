@@ -51,14 +51,14 @@ defmodule Defdo.Cloudflare.Monitor do
   end
 
   defp execute_monitor do
-    Logger.info("🏪 Executing the checkup...", ansi_color: :magenta)
+    Logger.info("Executing checkup...")
 
     get_cloudflare_config_domains()
     |> Enum.map(&process/1)
   end
 
   defp process(domain) do
-    Logger.info("🏪 #{domain}", ansi_color: :blue)
+    Logger.info("Processing domain: #{domain}")
     local_ip = get_current_ip()
     zone_id = get_zone_id(domain)
 
@@ -77,37 +77,34 @@ defmodule Defdo.Cloudflare.Monitor do
         records = zone_id |> list_dns_records(name: record_name)
 
         if Enum.empty?(records) do
-          Logger.warning("⚠️  DNS record '#{record_name}' not found in Cloudflare",
-            ansi_color: :yellow
-          )
+          Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
 
           if get_cloudflare_key(:auto_create_missing_records) do
-            Logger.info("🔧 Creating missing DNS record: #{record_name}", ansi_color: :cyan)
+            Logger.info("Creating missing DNS record: #{record_name}")
+
+            proxied = get_cloudflare_key(:proxy_a_records, false)
+            ttl = if proxied, do: 1, else: 300
 
             record_data = %{
               "type" => "A",
               "name" => record_name,
               "content" => local_ip,
-              "ttl" => 300,
-              "proxied" => false
+              "ttl" => ttl,
+              "proxied" => proxied
             }
 
             case create_dns_record(zone_id, record_data) do
               {true, result} ->
-                Logger.info("✅ Created DNS record: #{record_name} with promotional comment",
-                  ansi_color: :green
-                )
+                Logger.info("Created DNS record: #{record_name} with promotional comment")
 
                 [result]
 
               {false, _} ->
-                Logger.error("❌ Failed to create DNS record: #{record_name}", ansi_color: :red)
+                Logger.error("Failed to create DNS record: #{record_name}")
                 []
             end
           else
-            Logger.info("💡 Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records",
-              ansi_color: :blue
-            )
+            Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
 
             []
           end
@@ -123,30 +120,33 @@ defmodule Defdo.Cloudflare.Monitor do
       |> Enum.map(fn input ->
         {success, result} = apply_update(zone_id, input)
 
-        {message, color} =
+        message =
           if success do
-            {"✅ Success - #{result["name"]} dns record change to a new ip #{result["content"]} @ #{result["modified_on"]}",
-             ansi_color: :green}
+            "Success - #{result["name"]} DNS record updated (ip=#{result["content"]}, proxied=#{result["proxied"]})"
           else
-            {"❌ error - #{inspect(input)}", ansi_color: :red}
+            "Error - #{inspect(input)}"
           end
 
-        Logger.info(message, color)
+        if success do
+          Logger.info(message)
+        else
+          Logger.error(message)
+        end
 
         message
       end)
 
     result =
       if result == [] do
-        message = "💤 Nothing to do"
-        Logger.info(message, ansi_color: :blue)
+        message = "Nothing to do"
+        Logger.info(message)
 
         [message]
       else
         result
       end
 
-    Logger.info("🏪 checkup completed!", ansi_color: :magenta)
+    Logger.info("Checkup completed")
 
     result
   end

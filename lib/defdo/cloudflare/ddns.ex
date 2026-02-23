@@ -45,7 +45,7 @@ defmodule Defdo.Cloudflare.DDNS do
       zone["id"]
     else
       errors = body_response["errors"]
-      Logger.error(["🛑 ", inspect(errors)])
+      Logger.error("Cloudflare API error: #{inspect(errors)}")
       nil
     end
   end
@@ -74,7 +74,7 @@ defmodule Defdo.Cloudflare.DDNS do
       body_response["result"]
     else
       errors = body_response["errors"]
-      Logger.error(["🛑 ", inspect(errors)])
+      Logger.error("Cloudflare API error: #{inspect(errors)}")
       []
     end
   end
@@ -91,12 +91,13 @@ defmodule Defdo.Cloudflare.DDNS do
         body: body
       ).body
 
-    if Map.has_key?(body_response, "result") do
-      {body_response["success"], body_response["result"]}
+    if body_response["success"] == true and Map.has_key?(body_response, "result") and
+         not is_nil(body_response["result"]) do
+      {true, body_response["result"]}
     else
       errors = body_response["errors"]
-      Logger.error(["🛑 ", inspect(errors)])
-      {body_response["success"], nil}
+      Logger.error("Cloudflare API error: #{inspect(errors)}")
+      {body_response["success"] == true, nil}
     end
   end
 
@@ -120,12 +121,13 @@ defmodule Defdo.Cloudflare.DDNS do
         body: Jason.encode!(record_with_comment)
       ).body
 
-    if Map.has_key?(body_response, "result") do
-      {body_response["success"], body_response["result"]}
+    if body_response["success"] == true and Map.has_key?(body_response, "result") and
+         not is_nil(body_response["result"]) do
+      {true, body_response["result"]}
     else
       errors = body_response["errors"]
-      Logger.error(["🛑 ", inspect(errors)])
-      {body_response["success"], nil}
+      Logger.error("Cloudflare API error: #{inspect(errors)}")
+      {body_response["success"] == true, nil}
     end
   end
 
@@ -139,20 +141,48 @@ defmodule Defdo.Cloudflare.DDNS do
   @spec input_for_update_dns_records(list(), String.t()) :: list()
   def input_for_update_dns_records(records, local_ip) do
     records
-    |> Enum.reject(&(&1["content"] == local_ip))
-    |> Enum.map(fn record ->
-      body =
-        %{
-          "type" => record["type"],
-          "name" => record["name"],
-          "ttl" => record["ttl"],
-          "proxied" => record["proxied"],
-          "content" => local_ip
-        }
-        |> Jason.encode!()
+    |> Enum.group_by(&{&1["name"], &1["type"]})
+    |> Enum.flat_map(fn {{name, type}, grouped_records} ->
+      {updates, skipped} = plan_updates_for_group(grouped_records, local_ip)
 
-      {record["id"], body}
+      if skipped != [] do
+        skipped_ids = skipped_record_ids(skipped)
+
+        Logger.warning(
+          "Duplicate DNS records detected for #{type} #{name}. Skipping #{length(skipped)} record(s) (ids: #{skipped_ids}). Remove duplicates in Cloudflare."
+        )
+      end
+
+      updates
     end)
+  end
+
+  @doc """
+  Resolve if DNS record should be proxied.
+
+  By default, keep current Cloudflare proxied value.
+  Set `CLOUDFLARE_PROXY_A_RECORDS=true` to force proxied mode.
+  """
+  @spec resolve_proxied_value(map()) :: boolean()
+  def resolve_proxied_value(record) do
+    case get_cloudflare_key(:proxy_a_records, false) do
+      true -> true
+      false -> Map.get(record, "proxied", false)
+    end
+  end
+
+  @doc """
+  Resolve record TTL.
+
+  Cloudflare proxied records should use Auto TTL (`1`).
+  """
+  @spec resolve_ttl(map(), boolean()) :: integer()
+  def resolve_ttl(record, desired_proxied) do
+    if desired_proxied do
+      1
+    else
+      Map.get(record, "ttl", 300)
+    end
   end
 
   @doc """
@@ -170,20 +200,12 @@ defmodule Defdo.Cloudflare.DDNS do
 
     case Map.get(domain_mappings, domain) do
       nil ->
-        Logger.warning("No subdomains configured for domain: #{domain}", ansi_color: :yellow)
+        Logger.warning("No subdomains configured for domain: #{domain}")
         []
 
       subdomains when is_list(subdomains) ->
         subdomains
-        |> Enum.map(fn subdomain ->
-          if String.contains?(subdomain, ".") do
-            # Already a full domain
-            subdomain
-          else
-            # Append to parent domain
-            "#{subdomain}.#{domain}"
-          end
-        end)
+        |> Enum.map(&normalize_subdomain(&1, domain))
         |> Enum.uniq()
     end
   end
@@ -222,9 +244,7 @@ defmodule Defdo.Cloudflare.DDNS do
   defp parse_string_config(string) do
     case String.split(string, ~r/(,|\s)/, trim: true) do
       [] ->
-        Logger.info("Can't parse the config, it must separate with , or space",
-          ansi_color: :yellow
-        )
+        Logger.warning("Cannot parse config: values must be separated by comma or space")
 
         {:error, :missing_config}
 
@@ -247,5 +267,88 @@ defmodule Defdo.Cloudflare.DDNS do
 
   defp parse_cl_trace(_, "ip") do
     {"ip", "127.0.0.1"}
+  end
+
+  defp plan_updates_for_group(records, local_ip) do
+    planned_updates = Enum.map(records, &build_update_plan(&1, local_ip))
+    needs_update = Enum.filter(planned_updates, & &1.needs_update?)
+    already_desired = Enum.reject(planned_updates, & &1.needs_update?)
+
+    cond do
+      needs_update == [] ->
+        {[], []}
+
+      already_desired != [] ->
+        {[], needs_update}
+
+      true ->
+        [first | skipped] = needs_update
+        {[build_update_entry(first)], skipped}
+    end
+  end
+
+  defp build_update_plan(record, local_ip) do
+    desired_proxied = resolve_proxied_value(record)
+    desired_ttl = resolve_ttl(record, desired_proxied)
+    current_ip = Map.get(record, "content")
+    current_proxied = Map.get(record, "proxied", false)
+    current_ttl = Map.get(record, "ttl")
+
+    %{
+      record: record,
+      desired_ip: local_ip,
+      desired_proxied: desired_proxied,
+      desired_ttl: desired_ttl,
+      needs_update?:
+        current_ip != local_ip or current_proxied != desired_proxied or current_ttl != desired_ttl
+    }
+  end
+
+  defp build_update_entry(%{
+         record: record,
+         desired_ip: desired_ip,
+         desired_proxied: desired_proxied,
+         desired_ttl: desired_ttl
+       }) do
+    body =
+      %{
+        "type" => record["type"],
+        "name" => record["name"],
+        "ttl" => desired_ttl,
+        "proxied" => desired_proxied,
+        "content" => desired_ip
+      }
+      |> Jason.encode!()
+
+    {record["id"], body}
+  end
+
+  defp skipped_record_ids(skipped_records) do
+    skipped_records
+    |> Enum.map(&Map.get(&1.record, "id"))
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> "unknown"
+      ids -> Enum.join(ids, ", ")
+    end
+  end
+
+  defp normalize_subdomain(subdomain, domain) when is_binary(subdomain) do
+    clean_subdomain = String.trim(subdomain)
+    wildcard_target = String.trim_leading(clean_subdomain, "*.")
+
+    cond do
+      # Relative wildcard, e.g. "*.idp-dev" => "*.idp-dev.example.com"
+      String.starts_with?(clean_subdomain, "*.") and not String.contains?(wildcard_target, ".") ->
+        "#{clean_subdomain}.#{domain}"
+
+      # Fully-qualified domain (or wildcard FQDN), keep as is
+      String.contains?(clean_subdomain, ".") ->
+        clean_subdomain
+
+      # Relative subdomain, append current domain
+      true ->
+        "#{clean_subdomain}.#{domain}"
+    end
   end
 end

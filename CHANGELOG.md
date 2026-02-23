@@ -1,3 +1,20 @@
+# 0.2.1
+
+## ✨ New Features
+
+- Added `CLOUDFLARE_PROXY_A_RECORDS` to force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records during updates and auto-creation.
+
+## 🐛 Bug Fixes
+
+- Normalized logs for container dashboards: removed ANSI/emoji log output and disabled console colors to improve log readability.
+- Removed Cloudflare `modified_on` timestamp from success log lines to avoid broken rendering in dashboards that misparse ISO8601 text.
+- When `CLOUDFLARE_PROXY_A_RECORDS=true`, records with correct IP but `proxied=false` are now patched to enable proxy mode.
+- Set explicit logger format without leading blank line (`$time [$level] $message`) to improve compatibility with log viewers.
+- Relative wildcard entries in `CLOUDFLARE_DOMAIN_MAPPINGS` (e.g. `*.idp-dev`, `*.rnu`) are now expanded to the current zone (e.g. `*.idp-dev.defdo.ninja`).
+- Proxy-mode updates now enforce Cloudflare Auto TTL (`ttl=1`) for proxied records, preventing update failures on some wildcard records.
+- Improved Cloudflare API error handling for DNS create/update calls to log errors whenever the API returns `success=false` (including `result=nil` responses).
+- Duplicate A/AAAA records for the same `name+type` are now handled safely: if one record is already in desired state, conflicting updates are skipped and a warning with record IDs is logged.
+
 # 0.2.0
 
 ## 🚨 Breaking Changes
