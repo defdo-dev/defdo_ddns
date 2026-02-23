@@ -16,6 +16,7 @@ Defdo DDNS automatically updates your Cloudflare DNS records when your home inte
 - 🌐 **Multiple domain support** - Handle multiple domains and subdomains
 - 🚀 **Auto-creation** - Creates missing DNS records automatically
 - ☁️ **Cloudflare Proxy Mode** - Force `A/AAAA` records to run behind Cloudflare proxy
+- 🧭 **Declarative CNAME sync** - Manage wildcard and alias records from env config
 - 🐳 **Docker ready** - Easy deployment with Docker/Podman
 - 📝 **Smart logging** - Clear status updates and error messages
 - ⚡ **Lightweight** - Built with Elixir for reliability and performance
@@ -61,6 +62,7 @@ docker run -d \
   -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
   -e AUTO_CREATE_DNS_RECORDS="true" \
   -e CLOUDFLARE_PROXY_A_RECORDS="true" \
+  -e CLOUDFLARE_CNAME_RECORDS_JSON='[{"name":"*","target":"@","proxied":true}]' \
   paridin/defdo_ddns
 ```
 
@@ -88,6 +90,30 @@ Checkup completed
 | `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
 | `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
 | `CLOUDFLARE_PROXY_EXCLUDE` | ❌ No | `""` | Comma/space-separated host patterns to keep `DNS only` even when proxy mode is enabled. Supports exact hosts and wildcard suffixes (`*.idp-dev.example.com`) |
+| `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | JSON array of managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
+
+### Managed CNAME Records (Text Env via JSON)
+
+`CLOUDFLARE_CNAME_RECORDS_JSON` is a plain text env var that contains JSON.
+This lets you keep records declarative without adding a database.
+
+Example:
+
+```bash
+-e CLOUDFLARE_CNAME_RECORDS_JSON='[
+  {"name":"*","target":"@","proxied":true},
+  {"name":"join","target":"@","proxied":true,"ttl":1,"domain":"defdo.in"},
+  {"name":"www","target":"@","proxied":true}
+]'
+```
+
+Rules:
+
+- `name` supports `@`, relative hosts (`www`), wildcard (`*.idp-dev`), or FQDN.
+- `target` supports `@`, relative hosts, or FQDN.
+- `domain` is optional and limits an entry to one zone (recommended in multi-domain setups).
+- If `proxied=true`, TTL is forced to `1` (Cloudflare Auto TTL).
+- If a hostname is managed as CNAME, this app skips auto-creating `A` for that same name.
 
 ## 📋 Advanced Usage
 
@@ -111,6 +137,7 @@ else
     -e AUTO_CREATE_DNS_RECORDS="true" \
     -e CLOUDFLARE_PROXY_A_RECORDS="true" \
     -e CLOUDFLARE_PROXY_EXCLUDE="*.idp-dev.example.com,*.iot-dev.example.com" \
+    -e CLOUDFLARE_CNAME_RECORDS_JSON='[{"name":"*","target":"@","proxied":true}]' \
     paridin/defdo_ddns
 fi
 ```
@@ -135,6 +162,7 @@ services:
       - AUTO_CREATE_DNS_RECORDS=true
       - CLOUDFLARE_PROXY_A_RECORDS=true
       - CLOUDFLARE_PROXY_EXCLUDE=*.idp-dev.example.com,*.iot-dev.example.com
+      - 'CLOUDFLARE_CNAME_RECORDS_JSON=[{"name":"*","target":"@","proxied":true}]'
 ```
 
 ## 🔧 Troubleshooting
@@ -144,6 +172,11 @@ services:
 **❌ "DNS record not found"**
 - Enable `AUTO_CREATE_DNS_RECORDS=true` to create missing records automatically
 - Or manually create A records in Cloudflare dashboard
+
+**❌ "CNAME not created / conflicting type"**
+- A hostname cannot have `CNAME` plus `A/AAAA` at the same time.
+- Remove conflicting records in Cloudflare, then re-run monitor.
+- Use `domain` inside `CLOUDFLARE_CNAME_RECORDS_JSON` to avoid applying a relative name to the wrong zone.
 
 **❌ "Hairpin NAT / loopback issues"**
 - Enable `CLOUDFLARE_PROXY_A_RECORDS=true` so records are created/updated with Cloudflare proxy enabled
@@ -240,6 +273,7 @@ When deep proxied hostnames are detected, logs can also include:
 - [x] Auto-create missing DNS records
 - [x] Optional Cloudflare proxy mode (`CLOUDFLARE_PROXY_A_RECORDS`)
 - [x] Proxy exclusion list for nested hosts (`CLOUDFLARE_PROXY_EXCLUDE`)
+- [x] Declarative CNAME management (`CLOUDFLARE_CNAME_RECORDS_JSON`)
 - [x] Duplicate DNS record detection with safe update behavior
 - [x] Domain posture health output (`[HEALTH][GREEN|YELLOW|RED]`)
 - [x] Troubleshooting docs for SSL modes, orange/gray cloud, and hairpin NAT behavior
@@ -248,6 +282,7 @@ When deep proxied hostnames are detected, logs can also include:
 
 - [ ] Health check endpoint (machine-readable status for monitoring systems)
 - [ ] Fail-fast/alert mode when posture is `RED` (for example strict policy mode)
+- [ ] CNAME policy validator command (report deep proxied hosts and ACM-risk before deploy)
 - [ ] Webhook notifications (Slack/Discord/Telegram/email)
 - [ ] Web dashboard for monitoring and history
 - [ ] Support for other DNS providers

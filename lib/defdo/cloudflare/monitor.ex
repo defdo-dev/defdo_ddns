@@ -67,13 +67,17 @@ defmodule Defdo.Cloudflare.Monitor do
       Logger.error(message)
       [message]
     else
+      configured_cname_records = get_cname_records_for_domain(domain)
+      cname_record_names = configured_cname_records |> Enum.map(& &1["name"]) |> MapSet.new()
+
       # obtained by Application config
       # retrieves the subdomains to be monitored
       dns_records_to_monitor =
         domain
         |> records_to_monitor()
+        |> Kernel.++(MapSet.to_list(cname_record_names))
+        |> Enum.uniq()
 
-      # records from cloudflare currently focus on A records or AAAA.
       # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
       # of comma-separated name filtering (deprecated 2025-02-21)
       online_dns_records =
@@ -84,43 +88,54 @@ defmodule Defdo.Cloudflare.Monitor do
           if Enum.empty?(records) do
             Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
 
-            if get_cloudflare_key(:auto_create_missing_records) do
-              Logger.info("Creating missing DNS record: #{record_name}")
+            cond do
+              MapSet.member?(cname_record_names, record_name) ->
+                Logger.info(
+                  "Skipping A auto-create for '#{record_name}' because it is managed as CNAME"
+                )
 
-              proxied = get_cloudflare_key(:proxy_a_records, false)
-              ttl = if proxied, do: 1, else: 300
+                []
 
-              record_data = %{
-                "type" => "A",
-                "name" => record_name,
-                "content" => local_ip,
-                "ttl" => ttl,
-                "proxied" => proxied
-              }
+              get_cloudflare_key(:auto_create_missing_records) ->
+                Logger.info("Creating missing DNS record: #{record_name}")
 
-              case create_dns_record(zone_id, record_data) do
-                {true, result} ->
-                  Logger.info("Created DNS record: #{record_name} with promotional comment")
+                proxied = get_cloudflare_key(:proxy_a_records, false)
+                ttl = if proxied, do: 1, else: 300
 
-                  [result]
+                record_data = %{
+                  "type" => "A",
+                  "name" => record_name,
+                  "content" => local_ip,
+                  "ttl" => ttl,
+                  "proxied" => proxied
+                }
 
-                {false, _} ->
-                  Logger.error("Failed to create DNS record: #{record_name}")
-                  []
-              end
-            else
-              Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
+                case create_dns_record(zone_id, record_data) do
+                  {true, result} ->
+                    Logger.info("Created DNS record: #{record_name} with promotional comment")
 
-              []
+                    [result]
+
+                  {false, _} ->
+                    Logger.error("Failed to create DNS record: #{record_name}")
+                    []
+                end
+
+              true ->
+                Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
+                []
             end
           else
             records
           end
         end)
+
+      ip_dns_records =
+        online_dns_records
         |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
 
-      result =
-        online_dns_records
+      ip_result =
+        ip_dns_records
         |> input_for_update_dns_records(local_ip)
         |> Enum.map(fn input ->
           {success, result} = apply_update(zone_id, input)
@@ -141,11 +156,14 @@ defmodule Defdo.Cloudflare.Monitor do
           message
         end)
 
+      cname_result = sync_cname_records(zone_id, configured_cname_records)
+      result = ip_result ++ cname_result
+
       # Re-read records after updates to evaluate final state.
       final_dns_records =
         dns_records_to_monitor
         |> Enum.flat_map(fn record_name -> list_dns_records(zone_id, name: record_name) end)
-        |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
+        |> Enum.filter(&(&1["type"] in ~w(A AAAA CNAME)))
 
       log_advanced_certificate_warnings(domain, final_dns_records)
 
@@ -167,6 +185,72 @@ defmodule Defdo.Cloudflare.Monitor do
       Logger.info("Checkup completed")
 
       result
+    end
+  end
+
+  defp sync_cname_records(_zone_id, []), do: []
+
+  defp sync_cname_records(zone_id, desired_cname_records) do
+    desired_cname_records
+    |> Enum.flat_map(&sync_cname_record(zone_id, &1))
+  end
+
+  defp sync_cname_record(zone_id, desired_record) do
+    record_name = desired_record["name"]
+    existing_records = list_dns_records(zone_id, name: record_name)
+    cname_records = Enum.filter(existing_records, &(&1["type"] == "CNAME"))
+    conflicting_records = Enum.reject(existing_records, &(&1["type"] == "CNAME"))
+
+    cond do
+      conflicting_records != [] ->
+        conflicting_types =
+          conflicting_records
+          |> Enum.map(& &1["type"])
+          |> Enum.uniq()
+          |> Enum.join(",")
+
+        message =
+          "Error - cannot manage CNAME #{record_name}: conflicting DNS record type(s) exist (#{conflicting_types})"
+
+        Logger.error(message)
+        [message]
+
+      cname_records == [] ->
+        case create_dns_record(zone_id, desired_record) do
+          {true, result} ->
+            message =
+              "Success - #{result["name"]} CNAME record created (target=#{result["content"]}, proxied=#{result["proxied"]})"
+
+            Logger.info(message)
+            [message]
+
+          {false, _} ->
+            message = "Error - failed to create CNAME record: #{record_name}"
+            Logger.error(message)
+            [message]
+        end
+
+      true ->
+        cname_records
+        |> input_for_update_cname_records(desired_record)
+        |> Enum.map(fn input ->
+          {success, result} = apply_update(zone_id, input)
+
+          message =
+            if success do
+              "Success - #{result["name"]} CNAME record updated (target=#{result["content"]}, proxied=#{result["proxied"]})"
+            else
+              "Error - #{inspect(input)}"
+            end
+
+          if success do
+            Logger.info(message)
+          else
+            Logger.error(message)
+          end
+
+          message
+        end)
     end
   end
 

@@ -300,6 +300,130 @@ defmodule Defdo.Cloudflare.DDNSTest do
     end
   end
 
+  describe "get_cname_records_for_domain/1" do
+    test "normalizes relative records and applies defaults" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        proxy_a_records: true,
+        cname_records: [
+          %{"name" => "*", "target" => "@"},
+          %{"name" => "www", "target" => "@", "proxied" => false, "ttl" => "120"},
+          %{"name" => "api.other.com", "target" => "origin.other.net"},
+          %{"name" => "@", "target" => "@", "domain" => "example.com"}
+        ]
+      )
+
+      records = DDNS.get_cname_records_for_domain("example.com")
+
+      assert %{
+               "type" => "CNAME",
+               "name" => "*.example.com",
+               "content" => "example.com",
+               "proxied" => true,
+               "ttl" => 1
+             } in records
+
+      assert %{
+               "type" => "CNAME",
+               "name" => "www.example.com",
+               "content" => "example.com",
+               "proxied" => false,
+               "ttl" => 120
+             } in records
+
+      refute Enum.any?(records, &(&1["name"] == "api.other.com"))
+      refute Enum.any?(records, &(&1["name"] == "example.com" and &1["content"] == "example.com"))
+    end
+
+    test "honors optional domain scope field" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        proxy_a_records: false,
+        cname_records: [
+          %{"domain" => "example.com", "name" => "join", "target" => "@"},
+          %{"domain" => "example.org", "name" => "join", "target" => "@"}
+        ]
+      )
+
+      example_com = DDNS.get_cname_records_for_domain("example.com")
+      example_org = DDNS.get_cname_records_for_domain("example.org")
+
+      assert Enum.any?(example_com, &(&1["name"] == "join.example.com"))
+      refute Enum.any?(example_com, &(&1["name"] == "join.example.org"))
+
+      assert Enum.any?(example_org, &(&1["name"] == "join.example.org"))
+      refute Enum.any?(example_org, &(&1["name"] == "join.example.com"))
+    end
+  end
+
+  describe "input_for_update_cname_records/2" do
+    test "updates cname when target or proxy state differs" do
+      existing = [
+        %{
+          "name" => "join.example.com",
+          "id" => "c1",
+          "content" => "old.example.com",
+          "type" => "CNAME",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      desired = %{
+        "name" => "join.example.com",
+        "content" => "example.com",
+        "type" => "CNAME",
+        "ttl" => 1,
+        "proxied" => true
+      }
+
+      [{"c1", body}] = DDNS.input_for_update_cname_records(existing, desired)
+
+      assert %{
+               "type" => "CNAME",
+               "name" => "join.example.com",
+               "content" => "example.com",
+               "proxied" => true,
+               "ttl" => 1
+             } = Jason.decode!(body)
+    end
+
+    test "skips duplicates when one cname is already in desired state" do
+      records = [
+        %{
+          "name" => "join.example.com",
+          "id" => "good",
+          "content" => "example.com",
+          "type" => "CNAME",
+          "ttl" => 1,
+          "proxied" => true
+        },
+        %{
+          "name" => "join.example.com",
+          "id" => "stale",
+          "content" => "old.example.com",
+          "type" => "CNAME",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      desired = %{
+        "name" => "join.example.com",
+        "content" => "example.com",
+        "type" => "CNAME",
+        "ttl" => 1,
+        "proxied" => true
+      }
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert DDNS.input_for_update_cname_records(records, desired) == []
+        end)
+
+      assert log =~ "Duplicate DNS records detected for CNAME join.example.com"
+      assert log =~ "stale"
+    end
+  end
+
   describe "resolve_proxied_value/1" do
     test "keeps record proxied value by default" do
       Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)

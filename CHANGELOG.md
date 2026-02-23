@@ -1,9 +1,13 @@
-# Unreleased
+# 0.2.1 (Unreleased)
 
 ## ✨ New Features
 
 - Added `CLOUDFLARE_PROXY_EXCLUDE` to keep selected hostnames in `DNS only` even when `CLOUDFLARE_PROXY_A_RECORDS=true`.
   - Supports exact hostnames and wildcard suffix patterns (for example `*.idp-dev.defdo.ninja`).
+- Added `CLOUDFLARE_PROXY_A_RECORDS` to force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records during updates and auto-creation.
+- Added declarative CNAME management via `CLOUDFLARE_CNAME_RECORDS_JSON`.
+  - Supports `name`, `target`, optional `proxied`, `ttl`, and optional `domain` scope per record.
+  - Enables wildcard/alias record management using a plain-text env var (JSON string), without requiring a database.
 - Added domain posture output in monitor logs:
   - `[HEALTH][GREEN|YELLOW|RED]` summary per domain with SSL mode, proxied/dns-only counts, and hairpin risk.
 - Added Cloudflare edge SSL mode checks (`strict/full/flexible/off`) to improve runtime diagnostics.
@@ -16,7 +20,19 @@
   - Excluded records now resolve desired `proxied=false` during updates.
 - Normalized TTL when switching from proxied to DNS-only:
   - Records with Cloudflare auto TTL (`1`) are converted to a standard DNS-only TTL (`300`) to avoid invalid DNS-only state.
+- Normalized logs for container dashboards: removed ANSI/emoji log output and disabled console colors to improve log readability.
+- Removed Cloudflare `modified_on` timestamp from success log lines to avoid broken rendering in dashboards that misparse ISO8601 text.
+- When `CLOUDFLARE_PROXY_A_RECORDS=true`, records with correct IP but `proxied=false` are now patched to enable proxy mode.
+- Set explicit logger format without leading blank line (`$time [$level] $message`) to improve compatibility with log viewers.
+- Relative wildcard entries in `CLOUDFLARE_DOMAIN_MAPPINGS` (e.g. `*.idp-dev`, `*.rnu`) are now expanded to the current zone (e.g. `*.idp-dev.defdo.ninja`).
+- Proxy-mode updates now enforce Cloudflare Auto TTL (`ttl=1`) for proxied records, preventing update failures on some wildcard records.
+- Improved Cloudflare API error handling for DNS create/update calls to log errors whenever the API returns `success=false` (including `result=nil` responses).
+- Duplicate A/AAAA records for the same `name+type` are now handled safely: if one record is already in desired state, conflicting updates are skipped and a warning with record IDs is logged.
+- Improved auto-create safety:
+  - When a hostname is declared in `CLOUDFLARE_CNAME_RECORDS_JSON`, monitor now skips auto-creating `A` records for that same name to avoid `A/CNAME` conflicts.
 - Added graceful handling when a zone ID cannot be resolved before DNS record operations.
+- Fixed release boot crash caused by runtime helper loading:
+  - Moved configuration parsing helper to compiled app code (`Defdo.ConfigHelper`) so releases do not depend on external `.exs` files at runtime.
 
 ## 📚 Documentation
 
@@ -26,23 +42,6 @@
   - New `CLOUDFLARE_PROXY_EXCLUDE` configuration examples.
   - Health posture and ACM warning log interpretation.
 - Updated roadmap to reflect completed work and next priorities.
-
-# 0.2.1
-
-## ✨ New Features
-
-- Added `CLOUDFLARE_PROXY_A_RECORDS` to force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records during updates and auto-creation.
-
-## 🐛 Bug Fixes
-
-- Normalized logs for container dashboards: removed ANSI/emoji log output and disabled console colors to improve log readability.
-- Removed Cloudflare `modified_on` timestamp from success log lines to avoid broken rendering in dashboards that misparse ISO8601 text.
-- When `CLOUDFLARE_PROXY_A_RECORDS=true`, records with correct IP but `proxied=false` are now patched to enable proxy mode.
-- Set explicit logger format without leading blank line (`$time [$level] $message`) to improve compatibility with log viewers.
-- Relative wildcard entries in `CLOUDFLARE_DOMAIN_MAPPINGS` (e.g. `*.idp-dev`, `*.rnu`) are now expanded to the current zone (e.g. `*.idp-dev.defdo.ninja`).
-- Proxy-mode updates now enforce Cloudflare Auto TTL (`ttl=1`) for proxied records, preventing update failures on some wildcard records.
-- Improved Cloudflare API error handling for DNS create/update calls to log errors whenever the API returns `success=false` (including `result=nil` responses).
-- Duplicate A/AAAA records for the same `name+type` are now handled safely: if one record is already in desired state, conflicting updates are skipped and a warning with record IDs is logged.
 
 # 0.2.0
 

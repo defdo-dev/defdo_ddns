@@ -199,6 +199,41 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   @doc """
+  Check CNAME records that must be updated to match a desired record definition.
+  """
+  @spec input_for_update_cname_records(list(), map()) :: list()
+  def input_for_update_cname_records(records, desired_record)
+      when is_list(records) and is_map(desired_record) do
+    desired_content = Map.get(desired_record, "content")
+    desired_proxied = Map.get(desired_record, "proxied", false)
+    desired_ttl = resolve_ttl(desired_record, desired_proxied)
+
+    if is_binary(desired_content) do
+      records
+      |> Enum.filter(&(&1["type"] == "CNAME"))
+      |> Enum.group_by(&{&1["name"], &1["type"]})
+      |> Enum.flat_map(fn {{name, type}, grouped_records} ->
+        {updates, skipped} =
+          plan_updates_for_group(grouped_records, desired_content, desired_proxied, desired_ttl)
+
+        if skipped != [] do
+          skipped_ids = skipped_record_ids(skipped)
+
+          Logger.warning(
+            "Duplicate DNS records detected for #{type} #{name}. Skipping #{length(skipped)} record(s) (ids: #{skipped_ids}). Remove duplicates in Cloudflare."
+          )
+        end
+
+        updates
+      end)
+    else
+      []
+    end
+  end
+
+  def input_for_update_cname_records(_records, _desired_record), do: []
+
+  @doc """
   Resolve if DNS record should be proxied.
 
   By default, keep current Cloudflare proxied value.
@@ -362,6 +397,29 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   @doc """
+  Retrieve configured CNAME records normalized for a specific zone/domain.
+
+  Config comes from `CLOUDFLARE_CNAME_RECORDS_JSON`.
+  Supported keys per entry:
+  - `name` (required): `@`, relative host (e.g. `www`), wildcard (e.g. `*.idp-dev`) or FQDN.
+  - `target` (required): `@`, relative host or FQDN.
+  - `proxied` (optional): boolean; defaults to `CLOUDFLARE_PROXY_A_RECORDS`.
+  - `ttl` (optional): integer/string; proxied records force TTL `1`.
+  - `domain` (optional): restrict entry to a specific zone.
+  """
+  @spec get_cname_records_for_domain(String.t()) :: list(map())
+  def get_cname_records_for_domain(domain) when is_binary(domain) do
+    default_proxied = get_cloudflare_key(:proxy_a_records, false)
+
+    get_cloudflare_key(:cname_records, [])
+    |> List.wrap()
+    |> Enum.flat_map(&normalize_cname_record_config(&1, domain, default_proxied))
+    |> Enum.uniq_by(&{&1["name"], &1["content"], &1["proxied"], &1["ttl"]})
+  end
+
+  def get_cname_records_for_domain(_domain), do: []
+
+  @doc """
   Get subdomains specifically configured for a domain.
   """
   def get_subdomains_for_domain(domain) do
@@ -438,8 +496,27 @@ defmodule Defdo.Cloudflare.DDNS do
     {"ip", "127.0.0.1"}
   end
 
-  defp plan_updates_for_group(records, local_ip) do
-    planned_updates = Enum.map(records, &build_update_plan(&1, local_ip))
+  defp plan_updates_for_group(records, desired_content) do
+    planned_updates =
+      Enum.map(records, fn record ->
+        desired_proxied = resolve_proxied_value(record)
+        desired_ttl = resolve_ttl(record, desired_proxied)
+        build_update_plan(record, desired_content, desired_proxied, desired_ttl)
+      end)
+
+    resolve_group_update_plan(planned_updates)
+  end
+
+  defp plan_updates_for_group(records, desired_content, desired_proxied, desired_ttl) do
+    planned_updates =
+      Enum.map(records, fn record ->
+        build_update_plan(record, desired_content, desired_proxied, desired_ttl)
+      end)
+
+    resolve_group_update_plan(planned_updates)
+  end
+
+  defp resolve_group_update_plan(planned_updates) do
     needs_update = Enum.filter(planned_updates, & &1.needs_update?)
     already_desired = Enum.reject(planned_updates, & &1.needs_update?)
 
@@ -456,26 +533,25 @@ defmodule Defdo.Cloudflare.DDNS do
     end
   end
 
-  defp build_update_plan(record, local_ip) do
-    desired_proxied = resolve_proxied_value(record)
-    desired_ttl = resolve_ttl(record, desired_proxied)
-    current_ip = Map.get(record, "content")
+  defp build_update_plan(record, desired_content, desired_proxied, desired_ttl) do
+    current_content = Map.get(record, "content")
     current_proxied = Map.get(record, "proxied", false)
     current_ttl = Map.get(record, "ttl")
 
     %{
       record: record,
-      desired_ip: local_ip,
+      desired_content: desired_content,
       desired_proxied: desired_proxied,
       desired_ttl: desired_ttl,
       needs_update?:
-        current_ip != local_ip or current_proxied != desired_proxied or current_ttl != desired_ttl
+        current_content != desired_content or current_proxied != desired_proxied or
+          current_ttl != desired_ttl
     }
   end
 
   defp build_update_entry(%{
          record: record,
-         desired_ip: desired_ip,
+         desired_content: desired_content,
          desired_proxied: desired_proxied,
          desired_ttl: desired_ttl
        }) do
@@ -485,7 +561,7 @@ defmodule Defdo.Cloudflare.DDNS do
         "name" => record["name"],
         "ttl" => desired_ttl,
         "proxied" => desired_proxied,
-        "content" => desired_ip
+        "content" => desired_content
       }
       |> Jason.encode!()
 
@@ -541,6 +617,179 @@ defmodule Defdo.Cloudflare.DDNS do
       # Relative subdomain, append current domain
       true ->
         "#{clean_subdomain}.#{domain}"
+    end
+  end
+
+  defp normalize_cname_record_config(config, domain, default_proxied)
+       when is_map(config) and is_binary(domain) do
+    with :ok <- matches_domain_scope?(config, domain),
+         {:ok, normalized_name} <- normalize_cname_name(config, domain),
+         {:ok, normalized_target} <- normalize_cname_target(config, domain),
+         true <- record_belongs_to_zone?(normalized_name, domain),
+         false <- same_record_target?(normalized_name, normalized_target) do
+      desired_proxied = get_config_boolean(config, "proxied", default_proxied)
+      desired_ttl = resolve_ttl(%{"ttl" => get_config_ttl(config)}, desired_proxied)
+
+      [
+        %{
+          "type" => "CNAME",
+          "name" => normalized_name,
+          "content" => normalized_target,
+          "proxied" => desired_proxied,
+          "ttl" => desired_ttl
+        }
+      ]
+    else
+      :skip ->
+        []
+
+      {:error, reason} ->
+        Logger.warning("Ignoring invalid CNAME config for domain #{domain}: #{reason}")
+        []
+
+      false ->
+        Logger.warning(
+          "Ignoring CNAME config outside zone #{domain}: name=#{inspect(get_config_value(config, "name"))}"
+        )
+
+        []
+
+      true ->
+        Logger.warning(
+          "Ignoring CNAME config where name and target are equal for domain #{domain}: name=#{inspect(get_config_value(config, "name"))}"
+        )
+
+        []
+    end
+  end
+
+  defp normalize_cname_record_config(_config, _domain, _default_proxied), do: []
+
+  defp matches_domain_scope?(config, domain) do
+    case get_config_string(config, "domain") do
+      nil -> :ok
+      "" -> :ok
+      ^domain -> :ok
+      _other -> :skip
+    end
+  end
+
+  defp normalize_cname_name(config, domain) do
+    case get_config_string(config, "name") do
+      nil ->
+        {:error, "missing name"}
+
+      "" ->
+        {:error, "missing name"}
+
+      "@" ->
+        {:ok, domain}
+
+      name ->
+        {:ok, normalize_subdomain(name, domain)}
+    end
+  end
+
+  defp normalize_cname_target(config, domain) do
+    case get_config_string(config, "target") do
+      nil ->
+        {:error, "missing target"}
+
+      "" ->
+        {:error, "missing target"}
+
+      "@" ->
+        {:ok, domain}
+
+      target ->
+        clean_target = target |> String.trim_trailing(".")
+
+        normalized_target =
+          if String.contains?(clean_target, ".") do
+            clean_target
+          else
+            "#{clean_target}.#{domain}"
+          end
+
+        {:ok, normalized_target}
+    end
+  end
+
+  defp same_record_target?(record_name, record_target) do
+    normalize_dns_name(record_name) == normalize_dns_name(record_target)
+  end
+
+  defp normalize_dns_name(name) when is_binary(name) do
+    name
+    |> String.trim()
+    |> String.trim_trailing(".")
+    |> String.downcase()
+  end
+
+  defp record_belongs_to_zone?(record_name, domain)
+       when is_binary(record_name) and is_binary(domain) do
+    record_name == domain or String.ends_with?(record_name, ".#{domain}")
+  end
+
+  defp get_config_value(config, key) when is_map(config) and is_binary(key) do
+    case key do
+      "name" -> Map.get(config, "name", Map.get(config, :name))
+      "target" -> Map.get(config, "target", Map.get(config, :target))
+      "proxied" -> Map.get(config, "proxied", Map.get(config, :proxied))
+      "ttl" -> Map.get(config, "ttl", Map.get(config, :ttl))
+      "domain" -> Map.get(config, "domain", Map.get(config, :domain))
+      _ -> nil
+    end
+  end
+
+  defp get_config_string(config, key) do
+    case get_config_value(config, key) do
+      value when is_binary(value) ->
+        value
+        |> String.trim()
+
+      value when is_atom(value) ->
+        value
+        |> to_string()
+        |> String.trim()
+
+      value when is_integer(value) ->
+        Integer.to_string(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp get_config_boolean(config, key, default) do
+    case get_config_value(config, key) do
+      value when is_boolean(value) ->
+        value
+
+      value when is_binary(value) ->
+        value
+        |> String.trim()
+        |> String.downcase()
+        |> Kernel.in(["true", "1", "yes", "on"])
+
+      _ ->
+        default
+    end
+  end
+
+  defp get_config_ttl(config) do
+    case get_config_value(config, "ttl") do
+      ttl when is_integer(ttl) and ttl > 0 ->
+        ttl
+
+      ttl when is_binary(ttl) ->
+        case Integer.parse(String.trim(ttl)) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 end
