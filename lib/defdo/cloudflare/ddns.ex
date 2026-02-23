@@ -6,24 +6,68 @@ defmodule Defdo.Cloudflare.DDNS do
 
   @base_url "https://api.cloudflare.com/client/v4"
   @zone_endpoint @base_url <> "/zones"
+  @ipv4_lookup_url "https://ipv4.icanhazip.com"
+  @ipv6_lookup_url "https://ipv6.icanhazip.com"
 
   @doc """
-  Get the current ip for the running service.
-
-  Keep in mind that you use it to get the current ip and most probably is your pc/router at your home lab.
-
-      iex> Defdo.Cloudflare.DDNS.get_current_ip()
+  Backward compatible helper for public IPv4 retrieval.
   """
-  @spec get_current_ip :: String.t()
+  @spec get_current_ip :: String.t() | nil
   def get_current_ip do
-    key = "ip"
+    get_current_ipv4()
+  end
 
-    {^key, current_ip} =
-      "https://www.cloudflare.com/cdn-cgi/trace"
-      |> Req.get()
-      |> parse_cl_trace(key)
+  @doc """
+  Get current public IPv4 for the running service.
+  """
+  @spec get_current_ipv4 :: String.t() | nil
+  def get_current_ipv4 do
+    get_current_ip_family(:ipv4)
+  end
 
-    current_ip
+  @doc """
+  Get current public IPv6 for the running service.
+  """
+  @spec get_current_ipv6 :: String.t() | nil
+  def get_current_ipv6 do
+    get_current_ip_family(:ipv6)
+  end
+
+  defp get_current_ip_family(:ipv4), do: fetch_public_ip(@ipv4_lookup_url, :ipv4)
+  defp get_current_ip_family(:ipv6), do: fetch_public_ip(@ipv6_lookup_url, :ipv6)
+
+  defp fetch_public_ip(url, family) when family in [:ipv4, :ipv6] do
+    case Req.get(url) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        body
+        |> to_string()
+        |> String.trim()
+        |> normalize_public_ip(family)
+
+      {:ok, %Req.Response{status: status}} ->
+        Logger.warning("Unable to detect public #{family} address (status=#{status})")
+        nil
+
+      {:error, reason} ->
+        Logger.warning("Unable to detect public #{family} address: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp normalize_public_ip(ip_value, expected_family) when is_binary(ip_value) do
+    case :inet.parse_address(String.to_charlist(ip_value)) do
+      {:ok, parsed}
+      when expected_family == :ipv4 and is_tuple(parsed) and tuple_size(parsed) == 4 ->
+        :inet.ntoa(parsed) |> to_string()
+
+      {:ok, parsed}
+      when expected_family == :ipv6 and is_tuple(parsed) and tuple_size(parsed) == 8 ->
+        :inet.ntoa(parsed) |> to_string()
+
+      _ ->
+        Logger.warning("Unable to parse detected public #{expected_family} address: #{ip_value}")
+        nil
+    end
   end
 
   @doc """
@@ -179,24 +223,36 @@ defmodule Defdo.Cloudflare.DDNS do
 
   In fact this give the second parameter to execute the update.
   """
-  @spec input_for_update_dns_records(list(), String.t()) :: list()
-  def input_for_update_dns_records(records, local_ip) do
+  @spec input_for_update_dns_records(list(), String.t() | map()) :: list()
+  def input_for_update_dns_records(records, local_ip) when is_binary(local_ip) do
+    input_for_update_dns_records(records, %{"A" => local_ip, "AAAA" => local_ip})
+  end
+
+  def input_for_update_dns_records(records, local_ips_by_type) when is_map(local_ips_by_type) do
     records
     |> Enum.group_by(&{&1["name"], &1["type"]})
     |> Enum.flat_map(fn {{name, type}, grouped_records} ->
-      {updates, skipped} = plan_updates_for_group(grouped_records, local_ip)
+      desired_ip = Map.get(local_ips_by_type, type)
 
-      if skipped != [] do
-        skipped_ids = skipped_record_ids(skipped)
+      if is_binary(desired_ip) and desired_ip != "" do
+        {updates, skipped} = plan_updates_for_group(grouped_records, desired_ip)
 
-        Logger.warning(
-          "Duplicate DNS records detected for #{type} #{name}. Skipping #{length(skipped)} record(s) (ids: #{skipped_ids}). Remove duplicates in Cloudflare."
-        )
+        if skipped != [] do
+          skipped_ids = skipped_record_ids(skipped)
+
+          Logger.warning(
+            "Duplicate DNS records detected for #{type} #{name}. Skipping #{length(skipped)} record(s) (ids: #{skipped_ids}). Remove duplicates in Cloudflare."
+          )
+        end
+
+        updates
+      else
+        []
       end
-
-      updates
     end)
   end
+
+  def input_for_update_dns_records(_records, _local_ips_by_type), do: []
 
   @doc """
   Check CNAME records that must be updated to match a desired record definition.
@@ -393,7 +449,14 @@ defmodule Defdo.Cloudflare.DDNS do
   Retrieve the records to be used to monitor for a specific domain.
   """
   def records_to_monitor(domain) do
-    [domain | get_subdomains_for_domain(domain)]
+    records_to_monitor(domain, :domain_mappings)
+  end
+
+  @doc """
+  Retrieve records to monitor for a specific domain and mapping key.
+  """
+  def records_to_monitor(domain, mapping_key) when is_atom(mapping_key) do
+    [domain | get_subdomains_for_domain(domain, mapping_key)]
   end
 
   @doc """
@@ -423,7 +486,11 @@ defmodule Defdo.Cloudflare.DDNS do
   Get subdomains specifically configured for a domain.
   """
   def get_subdomains_for_domain(domain) do
-    domain_mappings = get_cloudflare_key(:domain_mappings, %{})
+    get_subdomains_for_domain(domain, :domain_mappings)
+  end
+
+  def get_subdomains_for_domain(domain, mapping_key) when is_atom(mapping_key) do
+    domain_mappings = get_cloudflare_key(mapping_key, %{})
 
     case Map.get(domain_mappings, domain) do
       nil ->
@@ -441,8 +508,33 @@ defmodule Defdo.Cloudflare.DDNS do
   Get all configured domains from domain mappings.
   """
   def get_cloudflare_config_domains do
-    domain_mappings = get_cloudflare_key(:domain_mappings, %{})
-    Map.keys(domain_mappings)
+    get_cloudflare_config_domains(:domain_mappings)
+  end
+
+  def get_cloudflare_config_domains(mapping_key) when is_atom(mapping_key) do
+    case get_cloudflare_key(mapping_key, %{}) do
+      mappings when is_map(mappings) -> Map.keys(mappings)
+      _ -> []
+    end
+  end
+
+  @doc """
+  Get combined configured domains from A and AAAA mappings.
+  """
+  def get_all_cloudflare_config_domains do
+    (get_cloudflare_config_domains(:domain_mappings) ++
+       get_cloudflare_config_domains(:aaaa_domain_mappings))
+    |> Enum.uniq()
+  end
+
+  @doc """
+  Check if a domain is configured for a specific mapping key.
+  """
+  def domain_configured?(domain, mapping_key \\ :domain_mappings) when is_atom(mapping_key) do
+    case get_cloudflare_key(mapping_key, %{}) do
+      mappings when is_map(mappings) -> Map.has_key?(mappings, domain)
+      _ -> false
+    end
   end
 
   @doc """
@@ -478,22 +570,6 @@ defmodule Defdo.Cloudflare.DDNS do
       list when is_list(list) ->
         list
     end
-  end
-
-  defp parse_cl_trace({:ok, %Req.Response{body: body, status: 200}}, key) do
-    body
-    |> String.split("\n")
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn str ->
-      [key, value] = String.split(str, "=")
-      {key, value}
-    end)
-    |> Enum.filter(fn {k, _value} -> k == key end)
-    |> List.first()
-  end
-
-  defp parse_cl_trace(_, "ip") do
-    {"ip", "127.0.0.1"}
   end
 
   defp plan_updates_for_group(records, desired_content) do

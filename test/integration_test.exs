@@ -8,6 +8,8 @@ defmodule Defdo.IntegrationTest do
       # This would normally require network access
       # For testing, we verify the function exists and handles errors
       assert function_exported?(DDNS, :get_current_ip, 0)
+      assert function_exported?(DDNS, :get_current_ipv4, 0)
+      assert function_exported?(DDNS, :get_current_ipv6, 0)
     end
 
     test "API endpoint construction" do

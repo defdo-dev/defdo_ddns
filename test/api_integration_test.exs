@@ -22,6 +22,8 @@ defmodule Defdo.APIIntegrationTest do
     test "current IP detection function exists" do
       # Test IP detection functionality
       assert function_exported?(DDNS, :get_current_ip, 0)
+      assert function_exported?(DDNS, :get_current_ipv4, 0)
+      assert function_exported?(DDNS, :get_current_ipv6, 0)
     end
   end
 
@@ -39,6 +41,8 @@ defmodule Defdo.APIIntegrationTest do
     test "API functions exist for error handling" do
       # Should handle timeouts gracefully
       assert function_exported?(DDNS, :get_current_ip, 0)
+      assert function_exported?(DDNS, :get_current_ipv4, 0)
+      assert function_exported?(DDNS, :get_current_ipv6, 0)
 
       # Should handle JSON parsing errors
       assert function_exported?(DDNS, :get_zone_id, 1)

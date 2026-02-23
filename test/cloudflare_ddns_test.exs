@@ -262,6 +262,73 @@ defmodule Defdo.Cloudflare.DDNSTest do
       assert log =~ "stale"
     end
 
+    test "updates A and AAAA records with different desired addresses" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
+
+      dns_records = [
+        %{
+          "name" => "edge.example.com",
+          "id" => "a1",
+          "content" => "203.0.113.10",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        },
+        %{
+          "name" => "edge.example.com",
+          "id" => "aaaa1",
+          "content" => "2001:db8::10",
+          "type" => "AAAA",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      updates =
+        DDNS.input_for_update_dns_records(dns_records, %{
+          "A" => "203.0.113.11",
+          "AAAA" => "2001:db8::11"
+        })
+
+      assert length(updates) == 2
+
+      assert Enum.any?(updates, fn {id, body} ->
+               id == "a1" and Jason.decode!(body)["content"] == "203.0.113.11"
+             end)
+
+      assert Enum.any?(updates, fn {id, body} ->
+               id == "aaaa1" and Jason.decode!(body)["content"] == "2001:db8::11"
+             end)
+    end
+
+    test "skips AAAA update when no desired IPv6 is provided" do
+      Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: false)
+
+      dns_records = [
+        %{
+          "name" => "edge.example.com",
+          "id" => "a1",
+          "content" => "203.0.113.10",
+          "type" => "A",
+          "ttl" => 300,
+          "proxied" => false
+        },
+        %{
+          "name" => "edge.example.com",
+          "id" => "aaaa1",
+          "content" => "2001:db8::10",
+          "type" => "AAAA",
+          "ttl" => 300,
+          "proxied" => false
+        }
+      ]
+
+      updates = DDNS.input_for_update_dns_records(dns_records, %{"A" => "203.0.113.11"})
+
+      assert length(updates) == 1
+      assert [{"a1", _body}] = updates
+    end
+
     test "updates only one record when multiple duplicates need changes" do
       Application.put_env(:defdo_ddns, Cloudflare, proxy_a_records: true)
 
@@ -297,6 +364,33 @@ defmodule Defdo.Cloudflare.DDNSTest do
 
       assert log =~ "Duplicate DNS records detected for A *.edge.zone-one.example"
       assert log =~ "second"
+    end
+  end
+
+  describe "domain mapping helpers" do
+    test "returns combined configured domains from A and AAAA mappings" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{"example.com" => ["www"], "defdo.in" => []},
+        aaaa_domain_mappings: %{"example.com" => ["www"], "ipv6-only.net" => ["app"]}
+      )
+
+      domains = DDNS.get_all_cloudflare_config_domains()
+      assert "example.com" in domains
+      assert "defdo.in" in domains
+      assert "ipv6-only.net" in domains
+      assert length(domains) == 3
+    end
+
+    test "checks domain configuration per mapping key" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{"example.com" => ["www"]},
+        aaaa_domain_mappings: %{"ipv6-only.net" => ["app"]}
+      )
+
+      assert DDNS.domain_configured?("example.com", :domain_mappings)
+      refute DDNS.domain_configured?("example.com", :aaaa_domain_mappings)
+      assert DDNS.domain_configured?("ipv6-only.net", :aaaa_domain_mappings)
+      refute DDNS.domain_configured?("missing.net", :domain_mappings)
     end
   end
 

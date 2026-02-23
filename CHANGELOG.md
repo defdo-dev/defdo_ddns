@@ -5,6 +5,12 @@
 - Added `CLOUDFLARE_PROXY_EXCLUDE` to keep selected hostnames in `DNS only` even when `CLOUDFLARE_PROXY_A_RECORDS=true`.
   - Supports exact hostnames and wildcard suffix patterns (for example `*.idp-dev.defdo.ninja`).
 - Added `CLOUDFLARE_PROXY_A_RECORDS` to force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records during updates and auto-creation.
+- Added `CLOUDFLARE_A_RECORDS_JSON` with JSON-first parsing for A monitor targets.
+  - Supports object and array JSON formats for easier machine-generated config.
+  - Falls back to legacy `CLOUDFLARE_DOMAIN_MAPPINGS` when JSON is empty or invalid.
+- Added `CLOUDFLARE_AAAA_RECORDS_JSON` for real IPv6 record synchronization.
+  - AAAA records now use detected public IPv6 independently from A record IPv4 updates.
+  - Supports object and array JSON formats, matching `CLOUDFLARE_A_RECORDS_JSON`.
 - Added declarative CNAME management via `CLOUDFLARE_CNAME_RECORDS_JSON`.
   - Supports `name`, `target`, optional `proxied`, `ttl`, and optional `domain` scope per record.
   - Enables wildcard/alias record management using a plain-text env var (JSON string), without requiring a database.
@@ -30,6 +36,8 @@
 - Duplicate A/AAAA records for the same `name+type` are now handled safely: if one record is already in desired state, conflicting updates are skipped and a warning with record IDs is logged.
 - Improved auto-create safety:
   - When a hostname is declared in `CLOUDFLARE_CNAME_RECORDS_JSON`, monitor now skips auto-creating `A` records for that same name to avoid `A/CNAME` conflicts.
+- Improved auto-create logic for IP records:
+  - Missing `A` and `AAAA` records are now created independently based on configured mappings and detected address family availability.
 - Added graceful handling when a zone ID cannot be resolved before DNS record operations.
 - Fixed release boot crash caused by runtime helper loading:
   - Moved configuration parsing helper to compiled app code (`Defdo.ConfigHelper`) so releases do not depend on external `.exs` files at runtime.

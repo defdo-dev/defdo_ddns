@@ -16,6 +16,7 @@ Defdo DDNS automatically updates your Cloudflare DNS records when your home inte
 - 🌐 **Multiple domain support** - Handle multiple domains and subdomains
 - 🚀 **Auto-creation** - Creates missing DNS records automatically
 - ☁️ **Cloudflare Proxy Mode** - Force `A/AAAA` records to run behind Cloudflare proxy
+- 🌐 **Real IPv6 support** - Updates `AAAA` records with detected public IPv6
 - 🧭 **Declarative CNAME sync** - Manage wildcard and alias records from env config
 - 🐳 **Docker ready** - Easy deployment with Docker/Podman
 - 📝 **Smart logging** - Clear status updates and error messages
@@ -42,7 +43,9 @@ Defdo DDNS automatically updates your Cloudflare DNS records when your home inte
 
 ### Step 2: Configure Your Domains
 
-Create your domain mapping string in this format:
+You can configure monitored hostnames in two formats.
+
+Legacy string format (`CLOUDFLARE_DOMAIN_MAPPINGS`):
 ```
 domain1.com:subdomain1,subdomain2;domain2.com:api,blog
 ```
@@ -52,6 +55,29 @@ domain1.com:subdomain1,subdomain2;domain2.com:api,blog
 - With subdomains: `example.com:www,api,blog`
 - Multiple domains: `example.com:www,api;mysite.org:home,server`
 
+JSON format (`CLOUDFLARE_A_RECORDS_JSON`, recommended for automation):
+
+```json
+{"example.com":["www","api"],"defdo.in":[]}
+```
+
+IPv6 JSON format (`CLOUDFLARE_AAAA_RECORDS_JSON`, optional):
+
+```json
+{"example.com":["www"],"ipv6-only.net":["app"]}
+```
+
+Or array form:
+
+```json
+[{"domain":"example.com","subdomains":["www","api"]},{"domain":"defdo.in","subdomains":[]}]
+```
+
+Priority:
+- If `CLOUDFLARE_A_RECORDS_JSON` is set and valid, it is used.
+- If JSON is empty or invalid, the app falls back to `CLOUDFLARE_DOMAIN_MAPPINGS`.
+- `CLOUDFLARE_AAAA_RECORDS_JSON` is evaluated independently and controls which hostnames are managed as `AAAA`.
+
 ### Step 3: Run with Docker
 
 ```bash
@@ -59,7 +85,8 @@ docker run -d \
   --name defdo-ddns \
   --restart unless-stopped \
   -e CLOUDFLARE_API_TOKEN="your_token_here" \
-  -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
+  -e CLOUDFLARE_A_RECORDS_JSON='{"example.com":["www","api"]}' \
+  -e CLOUDFLARE_AAAA_RECORDS_JSON='{"example.com":["www"]}' \
   -e AUTO_CREATE_DNS_RECORDS="true" \
   -e CLOUDFLARE_PROXY_A_RECORDS="true" \
   -e CLOUDFLARE_CNAME_RECORDS_JSON='[{"name":"*","target":"@","proxied":true}]' \
@@ -86,11 +113,15 @@ Checkup completed
 | Environment Variable | Required | Default | Description |
 |---------------------|----------|---------|-------------|
 | `CLOUDFLARE_API_TOKEN` | ✅ Yes | - | Your Cloudflare API token |
-| `CLOUDFLARE_DOMAIN_MAPPINGS` | ✅ Yes | - | Domain to subdomain mappings |
+| `CLOUDFLARE_DOMAIN_MAPPINGS` | ✅ Yes* | - | Legacy domain mapping string (`domain.com:sub1,sub2;...`) |
+| `CLOUDFLARE_A_RECORDS_JSON` | ❌ No | `""` | JSON A record mappings. When valid, overrides `CLOUDFLARE_DOMAIN_MAPPINGS` |
+| `CLOUDFLARE_AAAA_RECORDS_JSON` | ❌ No | `""` | JSON AAAA record mappings. Managed independently from A mappings |
 | `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
 | `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
 | `CLOUDFLARE_PROXY_EXCLUDE` | ❌ No | `""` | Comma/space-separated host patterns to keep `DNS only` even when proxy mode is enabled. Supports exact hosts and wildcard suffixes (`*.idp-dev.example.com`) |
 | `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | JSON array of managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
+
+\* Required unless `CLOUDFLARE_A_RECORDS_JSON` or `CLOUDFLARE_AAAA_RECORDS_JSON` is provided.
 
 ### Managed CNAME Records (Text Env via JSON)
 
@@ -133,7 +164,8 @@ else
     --name "$CONTAINER" \
     --security-opt=no-new-privileges \
     -e CLOUDFLARE_API_TOKEN="your_token_here" \
-    -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
+    -e CLOUDFLARE_A_RECORDS_JSON='{"example.com":["www","api"]}' \
+    -e CLOUDFLARE_AAAA_RECORDS_JSON='{"example.com":["www"]}' \
     -e AUTO_CREATE_DNS_RECORDS="true" \
     -e CLOUDFLARE_PROXY_A_RECORDS="true" \
     -e CLOUDFLARE_PROXY_EXCLUDE="*.idp-dev.example.com,*.iot-dev.example.com" \
@@ -158,7 +190,8 @@ services:
     restart: unless-stopped
     environment:
       - CLOUDFLARE_API_TOKEN=your_token_here
-      - CLOUDFLARE_DOMAIN_MAPPINGS=example.com:www,api
+      - 'CLOUDFLARE_A_RECORDS_JSON={"example.com":["www","api"]}'
+      - 'CLOUDFLARE_AAAA_RECORDS_JSON={"example.com":["www"]}'
       - AUTO_CREATE_DNS_RECORDS=true
       - CLOUDFLARE_PROXY_A_RECORDS=true
       - CLOUDFLARE_PROXY_EXCLUDE=*.idp-dev.example.com,*.iot-dev.example.com
@@ -177,6 +210,11 @@ services:
 - A hostname cannot have `CNAME` plus `A/AAAA` at the same time.
 - Remove conflicting records in Cloudflare, then re-run monitor.
 - Use `domain` inside `CLOUDFLARE_CNAME_RECORDS_JSON` to avoid applying a relative name to the wrong zone.
+
+**❌ "AAAA records not updating"**
+- Ensure `CLOUDFLARE_AAAA_RECORDS_JSON` includes the hostname/domain.
+- Ensure your network actually has public IPv6 reachability.
+- The app skips AAAA updates/auto-create when no public IPv6 is detected in that cycle.
 
 **❌ "Hairpin NAT / loopback issues"**
 - Enable `CLOUDFLARE_PROXY_A_RECORDS=true` so records are created/updated with Cloudflare proxy enabled
@@ -274,6 +312,7 @@ When deep proxied hostnames are detected, logs can also include:
 - [x] Optional Cloudflare proxy mode (`CLOUDFLARE_PROXY_A_RECORDS`)
 - [x] Proxy exclusion list for nested hosts (`CLOUDFLARE_PROXY_EXCLUDE`)
 - [x] Declarative CNAME management (`CLOUDFLARE_CNAME_RECORDS_JSON`)
+- [x] Real AAAA synchronization with IPv6 public address detection (`CLOUDFLARE_AAAA_RECORDS_JSON`)
 - [x] Duplicate DNS record detection with safe update behavior
 - [x] Domain posture health output (`[HEALTH][GREEN|YELLOW|RED]`)
 - [x] Troubleshooting docs for SSL modes, orange/gray cloud, and hairpin NAT behavior
@@ -286,7 +325,6 @@ When deep proxied hostnames are detected, logs can also include:
 - [ ] Webhook notifications (Slack/Discord/Telegram/email)
 - [ ] Web dashboard for monitoring and history
 - [ ] Support for other DNS providers
-- [ ] Improved IPv6 workflow (public IPv6 detection + AAAA strategy guidance)
 
 ## 🤝 Contributing
 
