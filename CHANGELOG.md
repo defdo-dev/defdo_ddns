@@ -1,3 +1,32 @@
+# Unreleased
+
+## ✨ New Features
+
+- Added `CLOUDFLARE_PROXY_EXCLUDE` to keep selected hostnames in `DNS only` even when `CLOUDFLARE_PROXY_A_RECORDS=true`.
+  - Supports exact hostnames and wildcard suffix patterns (for example `*.idp-dev.defdo.ninja`).
+- Added domain posture output in monitor logs:
+  - `[HEALTH][GREEN|YELLOW|RED]` summary per domain with SSL mode, proxied/dns-only counts, and hairpin risk.
+- Added Cloudflare edge SSL mode checks (`strict/full/flexible/off`) to improve runtime diagnostics.
+- Added ACM advisory warnings for deep hostnames that may require Cloudflare Advanced Certificate Manager when proxied.
+  - Logs now include `[CERT][ACM]` hints and recommendations.
+
+## 🐛 Bug Fixes
+
+- Improved proxy toggle safety when exclusions are used:
+  - Excluded records now resolve desired `proxied=false` during updates.
+- Normalized TTL when switching from proxied to DNS-only:
+  - Records with Cloudflare auto TTL (`1`) are converted to a standard DNS-only TTL (`300`) to avoid invalid DNS-only state.
+- Added graceful handling when a zone ID cannot be resolved before DNS record operations.
+
+## 📚 Documentation
+
+- Expanded README with:
+  - Cloudflare SSL/TLS mode behavior (`Flexible`, `Full`, `Full (strict)`).
+  - Orange-cloud vs gray-cloud behavior and hairpin implications.
+  - New `CLOUDFLARE_PROXY_EXCLUDE` configuration examples.
+  - Health posture and ACM warning log interpretation.
+- Updated roadmap to reflect completed work and next priorities.
+
 # 0.2.1
 
 ## ✨ New Features

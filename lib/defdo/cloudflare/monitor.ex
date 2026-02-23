@@ -62,92 +62,171 @@ defmodule Defdo.Cloudflare.Monitor do
     local_ip = get_current_ip()
     zone_id = get_zone_id(domain)
 
-    # obtained by Application config
-    # retrieves the subdomains to be monitored
-    dns_records_to_monitor =
-      domain
-      |> records_to_monitor()
+    if is_nil(zone_id) do
+      message = "Error - unable to resolve Cloudflare zone id for domain=#{domain}"
+      Logger.error(message)
+      [message]
+    else
+      # obtained by Application config
+      # retrieves the subdomains to be monitored
+      dns_records_to_monitor =
+        domain
+        |> records_to_monitor()
 
-    # records from cloudflare currently focus on A records or AAAA.
-    # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
-    # of comma-separated name filtering (deprecated 2025-02-21)
-    online_dns_records =
-      dns_records_to_monitor
-      |> Enum.flat_map(fn record_name ->
-        records = zone_id |> list_dns_records(name: record_name)
+      # records from cloudflare currently focus on A records or AAAA.
+      # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
+      # of comma-separated name filtering (deprecated 2025-02-21)
+      online_dns_records =
+        dns_records_to_monitor
+        |> Enum.flat_map(fn record_name ->
+          records = zone_id |> list_dns_records(name: record_name)
 
-        if Enum.empty?(records) do
-          Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
+          if Enum.empty?(records) do
+            Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
 
-          if get_cloudflare_key(:auto_create_missing_records) do
-            Logger.info("Creating missing DNS record: #{record_name}")
+            if get_cloudflare_key(:auto_create_missing_records) do
+              Logger.info("Creating missing DNS record: #{record_name}")
 
-            proxied = get_cloudflare_key(:proxy_a_records, false)
-            ttl = if proxied, do: 1, else: 300
+              proxied = get_cloudflare_key(:proxy_a_records, false)
+              ttl = if proxied, do: 1, else: 300
 
-            record_data = %{
-              "type" => "A",
-              "name" => record_name,
-              "content" => local_ip,
-              "ttl" => ttl,
-              "proxied" => proxied
-            }
+              record_data = %{
+                "type" => "A",
+                "name" => record_name,
+                "content" => local_ip,
+                "ttl" => ttl,
+                "proxied" => proxied
+              }
 
-            case create_dns_record(zone_id, record_data) do
-              {true, result} ->
-                Logger.info("Created DNS record: #{record_name} with promotional comment")
+              case create_dns_record(zone_id, record_data) do
+                {true, result} ->
+                  Logger.info("Created DNS record: #{record_name} with promotional comment")
 
-                [result]
+                  [result]
 
-              {false, _} ->
-                Logger.error("Failed to create DNS record: #{record_name}")
-                []
+                {false, _} ->
+                  Logger.error("Failed to create DNS record: #{record_name}")
+                  []
+              end
+            else
+              Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
+
+              []
             end
           else
-            Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
-
-            []
+            records
           end
-        else
-          records
-        end
-      end)
-      |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
+        end)
+        |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
 
-    result =
-      online_dns_records
-      |> input_for_update_dns_records(local_ip)
-      |> Enum.map(fn input ->
-        {success, result} = apply_update(zone_id, input)
+      result =
+        online_dns_records
+        |> input_for_update_dns_records(local_ip)
+        |> Enum.map(fn input ->
+          {success, result} = apply_update(zone_id, input)
 
-        message =
+          message =
+            if success do
+              "Success - #{result["name"]} DNS record updated (ip=#{result["content"]}, proxied=#{result["proxied"]})"
+            else
+              "Error - #{inspect(input)}"
+            end
+
           if success do
-            "Success - #{result["name"]} DNS record updated (ip=#{result["content"]}, proxied=#{result["proxied"]})"
+            Logger.info(message)
           else
-            "Error - #{inspect(input)}"
+            Logger.error(message)
           end
 
-        if success do
+          message
+        end)
+
+      # Re-read records after updates to evaluate final state.
+      final_dns_records =
+        dns_records_to_monitor
+        |> Enum.flat_map(fn record_name -> list_dns_records(zone_id, name: record_name) end)
+        |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
+
+      log_advanced_certificate_warnings(domain, final_dns_records)
+
+      ssl_mode = get_zone_ssl_mode(zone_id)
+      expected_proxied = get_cloudflare_key(:proxy_a_records, false)
+      posture = evaluate_domain_posture(final_dns_records, ssl_mode, expected_proxied)
+      posture_message = log_domain_posture(domain, posture)
+
+      result =
+        if result == [] do
+          message = "Nothing to do"
           Logger.info(message)
+
+          [message, posture_message]
         else
-          Logger.error(message)
+          result ++ [posture_message]
         end
 
-        message
-      end)
+      Logger.info("Checkup completed")
 
-    result =
-      if result == [] do
-        message = "Nothing to do"
-        Logger.info(message)
+      result
+    end
+  end
 
-        [message]
-      else
-        result
-      end
+  defp log_domain_posture(domain, posture) do
+    status = posture.overall |> to_string() |> String.upcase()
 
-    Logger.info("Checkup completed")
+    summary =
+      "[HEALTH][#{status}] domain=#{domain} ssl_mode=#{posture.ssl_mode} edge_tls=#{posture.edge_tls} " <>
+        "proxied=#{posture.proxied_count}/#{posture.records_total} dns_only=#{posture.dns_only_count} " <>
+        "proxy_mismatch=#{posture.proxy_mismatch_count} hairpin_risk=#{posture.hairpin_risk}"
 
-    result
+    case posture.overall do
+      :green ->
+        Logger.info(summary)
+
+      :yellow ->
+        Logger.warning(
+          summary <> " recommendation=Use Full (strict) and proxied records for web apps"
+        )
+
+      :red ->
+        Logger.error(summary <> " recommendation=Set Cloudflare SSL/TLS mode to Full (strict)")
+    end
+
+    summary
+  end
+
+  defp log_advanced_certificate_warnings(domain, records) do
+    deep_hosts =
+      records
+      |> Enum.map(&Map.get(&1, "name"))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&requires_advanced_certificate?(&1, domain))
+      |> Enum.uniq()
+
+    proxied_deep_hosts =
+      records
+      |> Enum.filter(
+        &(Map.get(&1, "proxied", false) and requires_advanced_certificate?(&1["name"], domain))
+      )
+      |> Enum.map(& &1["name"])
+      |> Enum.uniq()
+
+    excluded_deep_hosts =
+      deep_hosts
+      |> Enum.filter(&proxy_excluded?/1)
+      |> Enum.uniq()
+
+    if proxied_deep_hosts != [] do
+      Logger.warning(
+        "[CERT][ACM] domain=#{domain} proxied_hosts=#{Enum.join(proxied_deep_hosts, ",")} " <>
+          "may not be covered by Cloudflare Universal SSL and can require Advanced Certificate Manager."
+      )
+    end
+
+    if excluded_deep_hosts != [] do
+      Logger.warning(
+        "[CERT][ACM] domain=#{domain} excluded_hosts=#{Enum.join(excluded_deep_hosts, ",")} " <>
+          "matched CLOUDFLARE_PROXY_EXCLUDE; keeping DNS only helps avoid edge TLS handshake failures without Advanced Certificate Manager."
+      )
+    end
   end
 end

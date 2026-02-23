@@ -315,6 +315,25 @@ defmodule Defdo.Cloudflare.DDNSTest do
       assert DDNS.resolve_proxied_value(%{"proxied" => false}) == true
       assert DDNS.resolve_proxied_value(%{}) == true
     end
+
+    test "forces dns only for excluded records when proxy mode is enabled" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        proxy_a_records: true,
+        proxy_exclude: ["*.idp-dev.example.com", "legacy.example.com"]
+      )
+
+      assert DDNS.resolve_proxied_value(%{
+               "name" => "foo.idp-dev.example.com",
+               "proxied" => false
+             }) ==
+               false
+
+      assert DDNS.resolve_proxied_value(%{"name" => "legacy.example.com", "proxied" => true}) ==
+               false
+
+      assert DDNS.resolve_proxied_value(%{"name" => "www.example.com", "proxied" => false}) ==
+               true
+    end
   end
 
   describe "resolve_ttl/2" do
@@ -326,6 +345,101 @@ defmodule Defdo.Cloudflare.DDNSTest do
     test "keeps record ttl when proxied is disabled" do
       assert DDNS.resolve_ttl(%{"ttl" => 120}, false) == 120
       assert DDNS.resolve_ttl(%{}, false) == 300
+    end
+
+    test "normalizes auto ttl back to 300 when switching to dns only" do
+      assert DDNS.resolve_ttl(%{"ttl" => 1}, false) == 300
+    end
+  end
+
+  describe "proxy_excluded?/2 and get_proxy_exclude_patterns/0" do
+    test "matches exact and wildcard exclusions" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        proxy_exclude: ["*.idp-dev.example.com", "legacy.example.com"]
+      )
+
+      assert DDNS.get_proxy_exclude_patterns() == ["*.idp-dev.example.com", "legacy.example.com"]
+      assert DDNS.proxy_excluded?("foo.idp-dev.example.com")
+      assert DDNS.proxy_excluded?("legacy.example.com")
+      refute DDNS.proxy_excluded?("idp-dev.example.com")
+      refute DDNS.proxy_excluded?("www.example.com")
+    end
+  end
+
+  describe "requires_advanced_certificate?/2" do
+    test "detects deep hostnames under a zone" do
+      refute DDNS.requires_advanced_certificate?("example.com", "example.com")
+      refute DDNS.requires_advanced_certificate?("api.example.com", "example.com")
+      refute DDNS.requires_advanced_certificate?("*.example.com", "example.com")
+      assert DDNS.requires_advanced_certificate?("foo.bar.example.com", "example.com")
+      assert DDNS.requires_advanced_certificate?("*.idp-dev.example.com", "example.com")
+    end
+  end
+
+  describe "evaluate_domain_posture/3" do
+    test "returns green when records are proxied and ssl mode is strict" do
+      records = [
+        %{"name" => "app.example.com", "type" => "A", "proxied" => true},
+        %{"name" => "api.example.com", "type" => "A", "proxied" => true}
+      ]
+
+      posture = DDNS.evaluate_domain_posture(records, "strict", true)
+
+      assert posture.overall == :green
+      assert posture.edge_tls == :green
+      assert posture.hairpin_risk == :low
+      assert posture.proxy_mismatch_count == 0
+      assert posture.proxied_count == 2
+      assert posture.dns_only_count == 0
+    end
+
+    test "returns yellow when ssl mode is full even with proxied records" do
+      records = [
+        %{"name" => "app.example.com", "type" => "A", "proxied" => true}
+      ]
+
+      posture = DDNS.evaluate_domain_posture(records, "full", true)
+
+      assert posture.overall == :yellow
+      assert posture.edge_tls == :yellow
+      assert posture.hairpin_risk == :low
+    end
+
+    test "returns red when ssl mode is flexible" do
+      records = [
+        %{"name" => "app.example.com", "type" => "A", "proxied" => true}
+      ]
+
+      posture = DDNS.evaluate_domain_posture(records, "flexible", true)
+
+      assert posture.overall == :red
+      assert posture.edge_tls == :red
+    end
+
+    test "flags high hairpin risk when records are dns only" do
+      records = [
+        %{"name" => "app.example.com", "type" => "A", "proxied" => false}
+      ]
+
+      posture = DDNS.evaluate_domain_posture(records, "strict", false)
+
+      assert posture.overall == :yellow
+      assert posture.hairpin_risk == :high
+      assert posture.dns_only_count == 1
+      assert posture.proxied_count == 0
+    end
+
+    test "flags proxy mismatches when expected proxied does not match record state" do
+      records = [
+        %{"name" => "app.example.com", "type" => "A", "proxied" => false},
+        %{"name" => "api.example.com", "type" => "A", "proxied" => true}
+      ]
+
+      posture = DDNS.evaluate_domain_posture(records, "strict", true)
+
+      assert posture.overall == :yellow
+      assert posture.proxy_mismatch_count == 1
+      assert posture.hairpin_risk == :high
     end
   end
 

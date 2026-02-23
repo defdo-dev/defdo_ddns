@@ -80,6 +80,47 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   @doc """
+  Retrieve current SSL mode configured in Cloudflare for a zone.
+
+  Typical values:
+  - "strict"
+  - "full"
+  - "flexible"
+  - "off"
+  """
+  @spec get_zone_ssl_mode(String.t()) :: String.t() | nil
+  def get_zone_ssl_mode(zone_id) do
+    case Req.get(
+           "#{@zone_endpoint}/#{zone_id}/settings/ssl",
+           headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]
+         ) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        case body do
+          %{"success" => true, "result" => %{"value" => ssl_mode}} when is_binary(ssl_mode) ->
+            ssl_mode
+
+          _ ->
+            errors = Map.get(body, "errors", [])
+
+            Logger.warning(
+              "Cloudflare SSL mode check returned unexpected response: #{inspect(errors)}"
+            )
+
+            nil
+        end
+
+      {:ok, %Req.Response{body: body}} ->
+        errors = Map.get(body, "errors", [])
+        Logger.warning("Cloudflare SSL mode check failed: #{inspect(errors)}")
+        nil
+
+      {:error, reason} ->
+        Logger.warning("Cloudflare SSL mode check failed: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  @doc """
   Applies to cloudflare the record update.
   """
   @spec apply_update(String.t(), {String.t(), String.t()}) :: tuple()
@@ -161,13 +202,23 @@ defmodule Defdo.Cloudflare.DDNS do
   Resolve if DNS record should be proxied.
 
   By default, keep current Cloudflare proxied value.
-  Set `CLOUDFLARE_PROXY_A_RECORDS=true` to force proxied mode.
+  Set `CLOUDFLARE_PROXY_A_RECORDS=true` to force proxied mode,
+  except for hostnames matched by `CLOUDFLARE_PROXY_EXCLUDE`.
   """
   @spec resolve_proxied_value(map()) :: boolean()
   def resolve_proxied_value(record) do
     case get_cloudflare_key(:proxy_a_records, false) do
-      true -> true
-      false -> Map.get(record, "proxied", false)
+      true ->
+        record_name = Map.get(record, "name", "")
+
+        if proxy_excluded?(record_name) do
+          false
+        else
+          true
+        end
+
+      false ->
+        Map.get(record, "proxied", false)
     end
   end
 
@@ -181,8 +232,126 @@ defmodule Defdo.Cloudflare.DDNS do
     if desired_proxied do
       1
     else
-      Map.get(record, "ttl", 300)
+      case Map.get(record, "ttl") do
+        1 -> 300
+        nil -> 300
+        ttl -> ttl
+      end
     end
+  end
+
+  @doc """
+  Retrieve normalized proxy exclusion patterns from configuration.
+
+  Values come from `CLOUDFLARE_PROXY_EXCLUDE` and support exact names or
+  wildcard suffixes using `*.`.
+  """
+  @spec get_proxy_exclude_patterns() :: list(String.t())
+  def get_proxy_exclude_patterns do
+    get_cloudflare_key(:proxy_exclude, [])
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      value when is_binary(value) ->
+        String.split(value, ~r/[,\s]+/, trim: true)
+
+      value ->
+        [to_string(value)]
+    end)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  @doc """
+  Check if a record name matches any exclusion pattern from
+  `CLOUDFLARE_PROXY_EXCLUDE`.
+  """
+  @spec proxy_excluded?(String.t(), list(String.t())) :: boolean()
+  def proxy_excluded?(record_name, patterns \\ get_proxy_exclude_patterns())
+
+  def proxy_excluded?(record_name, patterns)
+      when is_binary(record_name) and is_list(patterns) do
+    Enum.any?(patterns, fn pattern -> proxy_pattern_match?(record_name, pattern) end)
+  end
+
+  def proxy_excluded?(_record_name, _patterns), do: false
+
+  @doc """
+  Returns `true` when a hostname is deeper than one label under the zone.
+
+  Example for zone `example.com`:
+  - `api.example.com` => false (covered by Universal wildcard)
+  - `foo.bar.example.com` => true (usually requires ACM for proxied edge cert)
+  """
+  @spec requires_advanced_certificate?(String.t(), String.t()) :: boolean()
+  def requires_advanced_certificate?(record_name, domain)
+      when is_binary(record_name) and is_binary(domain) do
+    suffix = ".#{domain}"
+
+    cond do
+      record_name == domain ->
+        false
+
+      not String.ends_with?(record_name, suffix) ->
+        false
+
+      true ->
+        relative = String.replace_suffix(record_name, suffix, "")
+
+        relative
+        |> String.split(".", trim: true)
+        |> length()
+        |> Kernel.>(1)
+    end
+  end
+
+  def requires_advanced_certificate?(_record_name, _domain), do: false
+
+  @doc """
+  Evaluate domain posture to quickly detect risky edge configurations.
+
+  Returned map is intended for monitor logs and lightweight health checks.
+  """
+  @spec evaluate_domain_posture(list(), String.t() | nil, boolean()) :: map()
+  def evaluate_domain_posture(records, ssl_mode, expected_proxied) do
+    total_records = length(records)
+    proxied_count = Enum.count(records, &Map.get(&1, "proxied", false))
+    dns_only_count = total_records - proxied_count
+
+    proxy_mismatch_count =
+      Enum.count(records, fn record ->
+        Map.get(record, "proxied", false) != expected_proxied
+      end)
+
+    edge_tls = ssl_mode_to_status(ssl_mode)
+    hairpin_risk = if dns_only_count > 0, do: :high, else: :low
+
+    overall =
+      cond do
+        edge_tls == :red ->
+          :red
+
+        total_records == 0 ->
+          :yellow
+
+        edge_tls == :green and proxy_mismatch_count == 0 and hairpin_risk == :low ->
+          :green
+
+        true ->
+          :yellow
+      end
+
+    %{
+      overall: overall,
+      edge_tls: edge_tls,
+      ssl_mode: ssl_mode || "unknown",
+      expected_proxied: expected_proxied,
+      records_total: total_records,
+      proxied_count: proxied_count,
+      dns_only_count: dns_only_count,
+      proxy_mismatch_count: proxy_mismatch_count,
+      hairpin_risk: hairpin_risk
+    }
   end
 
   @doc """
@@ -330,6 +499,29 @@ defmodule Defdo.Cloudflare.DDNS do
     |> case do
       [] -> "unknown"
       ids -> Enum.join(ids, ", ")
+    end
+  end
+
+  defp ssl_mode_to_status("strict"), do: :green
+  defp ssl_mode_to_status("full"), do: :yellow
+  defp ssl_mode_to_status("flexible"), do: :red
+  defp ssl_mode_to_status("off"), do: :red
+  defp ssl_mode_to_status(_), do: :yellow
+
+  defp proxy_pattern_match?(record_name, pattern)
+       when is_binary(record_name) and is_binary(pattern) do
+    clean_pattern = String.trim(pattern)
+
+    cond do
+      clean_pattern == "" ->
+        false
+
+      String.starts_with?(clean_pattern, "*.") ->
+        wildcard_suffix = String.trim_leading(clean_pattern, "*.")
+        String.ends_with?(record_name, ".#{wildcard_suffix}") and record_name != wildcard_suffix
+
+      true ->
+        record_name == clean_pattern
     end
   end
 

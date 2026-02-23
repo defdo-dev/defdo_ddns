@@ -39,10 +39,10 @@ defmodule Defdo.APIIntegrationTest do
     test "API functions exist for error handling" do
       # Should handle timeouts gracefully
       assert function_exported?(DDNS, :get_current_ip, 0)
-      
+
       # Should handle JSON parsing errors
       assert function_exported?(DDNS, :get_zone_id, 1)
-      
+
       # Should handle server errors
       assert function_exported?(DDNS, :list_dns_records, 1)
     end
@@ -51,38 +51,42 @@ defmodule Defdo.APIIntegrationTest do
   describe "configuration edge cases" do
     test "handles empty domain mappings" do
       Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{})
-      
+
       domains = DDNS.get_cloudflare_config_domains()
       assert domains == []
     end
 
     test "handles nil configuration" do
       Application.delete_env(:defdo_ddns, Cloudflare)
-      
+
       # When no config exists, get_cloudflare_key should handle nil gracefully
       # This test verifies the function doesn't crash with missing config
       assert_raise FunctionClauseError, fn ->
         DDNS.get_cloudflare_key(:domain_mappings)
       end
-      
+
       assert_raise FunctionClauseError, fn ->
         DDNS.get_cloudflare_key(:api_token)
       end
     end
 
     test "handles complex subdomain structures" do
-      Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{
-        "example.com" => ["www", "api.v1", "deep.nested.subdomain"]
-      })
-      
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "example.com" => ["www", "api.v1", "deep.nested.subdomain"]
+        }
+      )
+
       records = DDNS.records_to_monitor("example.com")
-      
+
       # The function treats subdomains with dots as full domains
       assert_contains_all(records, [
         "example.com",
         "www.example.com",
-        "api.v1",  # This is treated as a full domain since it contains a dot
-        "deep.nested.subdomain"  # This is also treated as a full domain
+        # This is treated as a full domain since it contains a dot
+        "api.v1",
+        # This is also treated as a full domain
+        "deep.nested.subdomain"
       ])
     end
   end

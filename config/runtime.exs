@@ -39,6 +39,12 @@ defmodule ConfigHelper do
     |> parse_boolean(default)
   end
 
+  def parse_list_env(env_var, default \\ []) do
+    env_var
+    |> System.get_env()
+    |> parse_list(default)
+  end
+
   defp parse_boolean(nil, default), do: default
 
   defp parse_boolean(value, _default) when is_binary(value) do
@@ -47,6 +53,15 @@ defmodule ConfigHelper do
     |> String.downcase()
     |> Kernel.in(["true", "1", "yes", "on"])
   end
+
+  defp parse_list(nil, default), do: default
+
+  defp parse_list(value, _default) when is_binary(value) do
+    value
+    |> String.split(~r/[,\s]+/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
 end
 
 config :defdo_ddns, Cloudflare,
@@ -54,7 +69,8 @@ config :defdo_ddns, Cloudflare,
   domain_mappings:
     ConfigHelper.parse_domain_mappings(System.get_env("CLOUDFLARE_DOMAIN_MAPPINGS", "")),
   auto_create_missing_records: ConfigHelper.parse_boolean_env("AUTO_CREATE_DNS_RECORDS", false),
-  proxy_a_records: ConfigHelper.parse_boolean_env("CLOUDFLARE_PROXY_A_RECORDS", false)
+  proxy_a_records: ConfigHelper.parse_boolean_env("CLOUDFLARE_PROXY_A_RECORDS", false),
+  proxy_exclude: ConfigHelper.parse_list_env("CLOUDFLARE_PROXY_EXCLUDE", [])
 
 config :logger, :console,
   format: "$time [$level] $message\n",

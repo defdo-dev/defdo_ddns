@@ -8,7 +8,7 @@ defmodule Defdo.TestHelpers do
   Sets up a clean test environment with default configuration.
   """
   def setup_test_config do
-    Application.put_env(:defdo_ddns, Cloudflare, 
+    Application.put_env(:defdo_ddns, Cloudflare,
       api_token: "test_token_123",
       domain_mappings: %{
         "example.com" => ["www", "api"],

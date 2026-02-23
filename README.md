@@ -87,6 +87,7 @@ Checkup completed
 | `CLOUDFLARE_DOMAIN_MAPPINGS` | ✅ Yes | - | Domain to subdomain mappings |
 | `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
 | `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
+| `CLOUDFLARE_PROXY_EXCLUDE` | ❌ No | `""` | Comma/space-separated host patterns to keep `DNS only` even when proxy mode is enabled. Supports exact hosts and wildcard suffixes (`*.idp-dev.example.com`) |
 
 ## 📋 Advanced Usage
 
@@ -109,6 +110,7 @@ else
     -e CLOUDFLARE_DOMAIN_MAPPINGS="example.com:www,api" \
     -e AUTO_CREATE_DNS_RECORDS="true" \
     -e CLOUDFLARE_PROXY_A_RECORDS="true" \
+    -e CLOUDFLARE_PROXY_EXCLUDE="*.idp-dev.example.com,*.iot-dev.example.com" \
     paridin/defdo_ddns
 fi
 ```
@@ -132,6 +134,7 @@ services:
       - CLOUDFLARE_DOMAIN_MAPPINGS=example.com:www,api
       - AUTO_CREATE_DNS_RECORDS=true
       - CLOUDFLARE_PROXY_A_RECORDS=true
+      - CLOUDFLARE_PROXY_EXCLUDE=*.idp-dev.example.com,*.iot-dev.example.com
 ```
 
 ## 🔧 Troubleshooting
@@ -144,6 +147,55 @@ services:
 
 **❌ "Hairpin NAT / loopback issues"**
 - Enable `CLOUDFLARE_PROXY_A_RECORDS=true` so records are created/updated with Cloudflare proxy enabled
+- If you use deep subdomains (for example `foo.idp-dev.example.com`) and do not use Cloudflare Advanced Certificate Manager, add exclusions with `CLOUDFLARE_PROXY_EXCLUDE` to keep them in `DNS only`
+
+### Cloudflare SSL/TLS Modes (Flexible vs Full vs Full strict)
+
+If your records are proxied by Cloudflare (orange cloud), Cloudflare becomes the TLS client to your origin (Traefik/Nginx/Caddy).
+Choosing the wrong SSL/TLS mode can cause confusing errors like `404` at the edge or origin mismatch.
+
+| Mode | Cloudflare -> Origin | Certificate Validation | Typical Impact |
+|------|-----------------------|------------------------|----------------|
+| `Flexible` | HTTP (`:80`) | No TLS to origin | Can fail when origin only serves HTTPS (`websecure`) and is not recommended for production security |
+| `Full` | HTTPS (`:443`) | No validation | Usually works with self-signed certs, but TLS trust is weak |
+| `Full (strict)` | HTTPS (`:443`) | Yes (valid cert required) | Recommended. End-to-end TLS with proper trust and fewer routing surprises |
+
+**Recommended for home labs with reverse proxies**: `Full (strict)`.
+
+### Orange cloud vs gray cloud (Cloudflare DNS proxy)
+
+In Cloudflare DNS, each record has a cloud status:
+
+- **Orange cloud (`Proxied`)**:
+  - Traffic goes through Cloudflare edge.
+  - Public clients see Cloudflare IPs, not your origin IP.
+  - Applies Cloudflare HTTP features and SSL mode behavior.
+  - Often helps with local hairpin limitations for web apps.
+- **Gray cloud (`DNS only`)**:
+  - DNS resolves directly to your public origin IP.
+  - Cloudflare edge rules/proxy are not in the request path.
+  - Local access depends on your router/modem NAT loopback behavior.
+
+In this project, `CLOUDFLARE_PROXY_A_RECORDS=true` means records are updated/created as **orange cloud** (`proxied=true`).
+Set it to `false` for **gray cloud** (`DNS only`).
+
+### Hairpin NAT vs Cloudflare Proxy (why behavior changes)
+
+- `DNS only` records resolve directly to your public IP.
+- Local clients then depend on router/modem NAT loopback (hairpin) support.
+- If hairpin is missing or inconsistent, local access may timeout while external access still works.
+
+With `CLOUDFLARE_PROXY_A_RECORDS=true`:
+- Web traffic (`HTTP/HTTPS/WebSocket`) goes through Cloudflare first.
+- This often avoids local hairpin limitations for browser-based apps.
+- Non-HTTP protocols (for example raw TCP services) still need direct routing/VPN design.
+
+### Safe Cloudflare checklist for proxied hosts
+
+1. Set SSL/TLS mode to `Full (strict)`.
+2. Keep Host header and SNI preserved unless you intentionally override them.
+3. Avoid broad Origin Rules over "all incoming requests" unless you need them.
+4. If behavior seems inconsistent after toggling proxy mode, flush local DNS cache and re-test.
 
 **❌ "Authentication failed"**
 - Verify your API token has correct permissions
@@ -160,13 +212,46 @@ Check logs for detailed error messages:
 docker logs defdo-ddns --follow
 ```
 
+### Health Status Output (`GREEN` / `YELLOW` / `RED`)
+
+Each checkup now emits a domain posture line like:
+
+```text
+[HEALTH][GREEN] domain=example.com ssl_mode=strict edge_tls=green proxied=3/3 dns_only=0 proxy_mismatch=0 hairpin_risk=low
+```
+
+Interpretation:
+- `GREEN`: strict TLS mode at Cloudflare + proxied records aligned + low hairpin risk.
+- `YELLOW`: configuration works but has risk signals (for example `full` mode, DNS-only records, or proxy mismatch).
+- `RED`: high-risk edge posture (for example `flexible`/`off` SSL mode).
+
+When deep proxied hostnames are detected, logs can also include:
+
+```text
+[CERT][ACM] ... may not be covered by Cloudflare Universal SSL and can require Advanced Certificate Manager.
+```
+
 ## 🛣️ Roadmap
 
-- [ ] Web dashboard for monitoring
-- [ ] Webhook notifications
+### ✅ Completed
+
+- [x] Automatic public IP monitoring and Cloudflare DNS updates
+- [x] Multi-domain and multi-subdomain mapping
+- [x] Auto-create missing DNS records
+- [x] Optional Cloudflare proxy mode (`CLOUDFLARE_PROXY_A_RECORDS`)
+- [x] Proxy exclusion list for nested hosts (`CLOUDFLARE_PROXY_EXCLUDE`)
+- [x] Duplicate DNS record detection with safe update behavior
+- [x] Domain posture health output (`[HEALTH][GREEN|YELLOW|RED]`)
+- [x] Troubleshooting docs for SSL modes, orange/gray cloud, and hairpin NAT behavior
+
+### ⏭️ Next
+
+- [ ] Health check endpoint (machine-readable status for monitoring systems)
+- [ ] Fail-fast/alert mode when posture is `RED` (for example strict policy mode)
+- [ ] Webhook notifications (Slack/Discord/Telegram/email)
+- [ ] Web dashboard for monitoring and history
 - [ ] Support for other DNS providers
-- [ ] IPv6 support
-- [ ] Health check endpoint
+- [ ] Improved IPv6 workflow (public IPv6 detection + AAAA strategy guidance)
 
 ## 🤝 Contributing
 
