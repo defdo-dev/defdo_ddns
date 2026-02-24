@@ -10,6 +10,7 @@
 erl_crash.dump
 *.ez
 *.beam
+defdo_ddns-*.tar
 /config/*.secret.exs
 .elixir_ls/
 

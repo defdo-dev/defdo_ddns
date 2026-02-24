@@ -81,4 +81,6 @@ jobs:
 
       - name: Build and push all platforms with Earthly
         run: |
-          earthly --ci --push +build-all-platforms 
+          earthly --ci --push +build-all-platforms \
+            --REPO=paridin/defdo_ddns \
+            --TAG=${{ steps.vars.outputs.tag }}

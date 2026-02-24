@@ -35,11 +35,14 @@ release:
   SAVE ARTIFACT "_build/${MIX_ENV}/rel/${RELEASE}" /release
 
 build-all-platforms:
-    BUILD --platform=linux/amd64 --platform=linux/arm64 +docker
+    ARG REPO=paridin/defdo_ddns
+    ARG TAG=latest
+    BUILD --platform=linux/amd64 --platform=linux/arm64 +docker --REPO=${REPO} --TAG=${TAG}
 
 docker:
   ARG TARGETPLATFORM
   ARG REPO=paridin/defdo_ddns
+  ARG TAG=latest
   ARG ALPINE_RELEASE=3.22.0
   FROM --platform=$TARGETPLATFORM alpine:${ALPINE_RELEASE}
   WORKDIR /opt/app
@@ -63,3 +66,4 @@ docker:
 
   CMD trap 'exit' INT; bin/$(ls bin) start
   SAVE IMAGE --push ${REPO}:latest
+  SAVE IMAGE --push ${REPO}:${TAG}

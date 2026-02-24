@@ -50,6 +50,10 @@ defmodule Defdo.Cloudflare.Monitor do
     GenServer.call(__MODULE__, :checkup)
   end
 
+  def checkup_once do
+    execute_monitor()
+  end
+
   defp execute_monitor do
     Logger.info("Executing checkup...")
 

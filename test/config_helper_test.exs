@@ -84,4 +84,41 @@ defmodule Defdo.ConfigHelperTest do
       assert warning =~ "Falling back to default mapping value"
     end
   end
+
+  describe "parse_integer_env/3" do
+    test "returns default when env var is missing" do
+      env_var = "DDNS_TEST_INTEGER_MISSING"
+      System.delete_env(env_var)
+
+      assert ConfigHelper.parse_integer_env(env_var, 4050, min: 1, max: 65_535) == 4050
+    end
+
+    test "parses integer when value is valid" do
+      env_var = "DDNS_TEST_INTEGER_VALID"
+      previous = System.get_env(env_var)
+
+      on_exit(fn ->
+        if previous == nil,
+          do: System.delete_env(env_var),
+          else: System.put_env(env_var, previous)
+      end)
+
+      System.put_env(env_var, "8080")
+      assert ConfigHelper.parse_integer_env(env_var, 4050, min: 1, max: 65_535) == 8080
+    end
+
+    test "returns default when value is outside min/max bounds" do
+      env_var = "DDNS_TEST_INTEGER_INVALID"
+      previous = System.get_env(env_var)
+
+      on_exit(fn ->
+        if previous == nil,
+          do: System.delete_env(env_var),
+          else: System.put_env(env_var, previous)
+      end)
+
+      System.put_env(env_var, "70000")
+      assert ConfigHelper.parse_integer_env(env_var, 4050, min: 1, max: 65_535) == 4050
+    end
+  end
 end

@@ -1,3 +1,32 @@
+# 0.3.0
+
+## ✨ New Features
+
+- Added optional embedded HTTP API (Bandit):
+  - `GET /health` for liveness checks.
+  - `POST /v1/dns/upsert` for authenticated CNAME upserts.
+- Added public dependency facade `Defdo.DDNS`:
+  - One-shot/manual checkup (`checkup_once/0`) and monitor-aware `checkup/0`.
+  - Runtime helpers for monitor lifecycle and configuration checks.
+- Added monitor runtime controls:
+  - `DDNS_ENABLE_MONITOR` to disable background monitor startup.
+  - `DDNS_REFETCH_EVERY_MS` to tune check interval without code changes.
+
+## 🐛 Bug Fixes
+
+- Added one-shot monitor execution path (`Defdo.Cloudflare.Monitor.checkup_once/0`) so checkups can run without a running monitor process.
+- Hardened monitor tests to avoid external network/API dependency during test runs.
+
+## 📦 Packaging & Release
+
+- Added Apache License 2.0 file (`LICENSE.md`).
+- Added GitHub Actions workflow to validate and publish tagged releases to Hex (`.github/workflows/publish_hex.yml`).
+- Completed Hex package metadata and docs setup (`description`, `package`, `docs`, `ex_doc`).
+
+## 📚 Documentation
+
+- Updated README with dependency/API usage and Bandit runtime configuration.
+
 # 0.2.1
 
 ## ✨ New Features

@@ -135,6 +135,12 @@ defmodule Defdo.ConfigHelper do
     |> parse_json(default, env_var)
   end
 
+  def parse_integer_env(env_var, default, opts \\ []) when is_integer(default) do
+    env_var
+    |> System.get_env()
+    |> parse_integer(default, opts)
+  end
+
   defp parse_boolean(nil, default), do: default
 
   defp parse_boolean(value, _default) when is_binary(value) do
@@ -230,6 +236,25 @@ defmodule Defdo.ConfigHelper do
           {:error, reason} ->
             {:error, "invalid subdomains for #{clean_domain}: #{reason}"}
         end
+    end
+  end
+
+  defp parse_integer(nil, default, _opts), do: default
+
+  defp parse_integer(value, default, opts) when is_binary(value) do
+    min = Keyword.get(opts, :min)
+    max = Keyword.get(opts, :max)
+
+    case Integer.parse(String.trim(value)) do
+      {parsed_value, ""} ->
+        cond do
+          is_integer(min) and parsed_value < min -> default
+          is_integer(max) and parsed_value > max -> default
+          true -> parsed_value
+        end
+
+      _ ->
+        default
     end
   end
 

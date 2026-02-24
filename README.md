@@ -120,8 +120,16 @@ Checkup completed
 | `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
 | `CLOUDFLARE_PROXY_EXCLUDE` | ❌ No | `""` | Comma/space-separated host patterns to keep `DNS only` even when proxy mode is enabled. Supports exact hosts and wildcard suffixes (`*.idp-dev.example.com`) |
 | `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | JSON array of managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
+| `DDNS_ENABLE_MONITOR` | ❌ No | `true`** | Enable/disable background monitor process |
+| `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
+| `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
+| `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
+| `DDNS_API_TOKEN` | ❌ No | - | Bearer token (or `x-api-token`) for API auth |
+| `DDNS_API_DEFAULT_TARGET` | ❌ No | `@` | Default CNAME target used by API upsert |
+| `DDNS_API_DEFAULT_PROXIED` | ❌ No | `true` | Default proxied mode used by API upsert |
 
 \* Required unless `CLOUDFLARE_A_RECORDS_JSON` or `CLOUDFLARE_AAAA_RECORDS_JSON` is provided.
+\** In `test` environment the default is `false` to avoid background network checks during test runs.
 
 ### Managed CNAME Records (Text Env via JSON)
 
@@ -145,6 +153,31 @@ Rules:
 - `domain` is optional and limits an entry to one zone (recommended in multi-domain setups).
 - If `proxied=true`, TTL is forced to `1` (Cloudflare Auto TTL).
 - If a hostname is managed as CNAME, this app skips auto-creating `A` for that same name.
+
+### Optional HTTP API (Bandit)
+
+This project can expose a lightweight HTTP API using Bandit.
+Enable it with:
+
+```bash
+-e DDNS_API_ENABLED=true \
+-e DDNS_API_PORT=4050 \
+-e DDNS_API_TOKEN="replace-with-strong-token"
+```
+
+Endpoints:
+
+- `GET /health` returns `{ "status": "ok" }`.
+- `POST /v1/dns/upsert` upserts a CNAME record for a FQDN under a base zone.
+
+Example request:
+
+```bash
+curl -X POST "http://localhost:4050/v1/dns/upsert" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${DDNS_API_TOKEN}" \
+  -d '{"fqdn":"acme-idp.defdo.in","base_domain":"defdo.in","target":"@","proxied":true}'
+```
 
 ## 📋 Advanced Usage
 
@@ -316,10 +349,10 @@ When deep proxied hostnames are detected, logs can also include:
 - [x] Duplicate DNS record detection with safe update behavior
 - [x] Domain posture health output (`[HEALTH][GREEN|YELLOW|RED]`)
 - [x] Troubleshooting docs for SSL modes, orange/gray cloud, and hairpin NAT behavior
+- [x] Optional embedded HTTP API with Bandit (`/health`, `/v1/dns/upsert`)
 
 ### ⏭️ Next
 
-- [ ] Health check endpoint (machine-readable status for monitoring systems)
 - [ ] Fail-fast/alert mode when posture is `RED` (for example strict policy mode)
 - [ ] CNAME policy validator command (report deep proxied hosts and ACM-risk before deploy)
 - [ ] Webhook notifications (Slack/Discord/Telegram/email)
@@ -336,7 +369,7 @@ We welcome contributions! Please feel free to:
 
 ## 📄 License
 
-This project is open source. Feel free to use it for personal and commercial projects.
+Licensed under Apache License 2.0. See `LICENSE.md`.
 
 ---
 
