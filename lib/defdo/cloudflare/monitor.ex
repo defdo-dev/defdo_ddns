@@ -120,41 +120,29 @@ defmodule Defdo.Cloudflare.Monitor do
         |> Kernel.++(MapSet.to_list(cname_record_names))
         |> Enum.uniq()
 
+      auto_create_missing_records = get_cloudflare_key(:auto_create_missing_records)
+
       # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
       # of comma-separated name filtering (deprecated 2025-02-21)
       online_dns_records =
         dns_records_to_monitor
         |> Enum.flat_map(fn record_name ->
-          records = zone_id |> list_dns_records(name: record_name)
+          records = list_dns_records(zone_id, name: record_name)
 
-          if Enum.empty?(records) do
-            Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
+          created_records =
+            maybe_create_missing_ip_records(
+              zone_id,
+              record_name,
+              records,
+              local_ipv4,
+              local_ipv6,
+              a_record_name_set,
+              aaaa_record_name_set,
+              cname_record_names,
+              auto_create_missing_records
+            )
 
-            cond do
-              MapSet.member?(cname_record_names, record_name) ->
-                Logger.info(
-                  "Skipping A auto-create for '#{record_name}' because it is managed as CNAME"
-                )
-
-                []
-
-              get_cloudflare_key(:auto_create_missing_records) ->
-                create_missing_ip_records(
-                  zone_id,
-                  record_name,
-                  local_ipv4,
-                  local_ipv6,
-                  a_record_name_set,
-                  aaaa_record_name_set
-                )
-
-              true ->
-                Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
-                []
-            end
-          else
-            records
-          end
+          records ++ created_records
         end)
 
       ip_dns_records =
@@ -221,15 +209,33 @@ defmodule Defdo.Cloudflare.Monitor do
          local_ipv4,
          local_ipv6,
          a_record_name_set,
-         aaaa_record_name_set
+         aaaa_record_name_set,
+         existing_records
        ) do
     proxied = get_cloudflare_key(:proxy_a_records, false)
     ttl = if proxied, do: 1, else: 300
 
+    existing_record_types =
+      existing_records
+      |> Enum.map(&Map.get(&1, "type", ""))
+      |> MapSet.new()
+
     record_types_to_create =
       []
-      |> maybe_add_missing_record_type("A", record_name, a_record_name_set, local_ipv4)
-      |> maybe_add_missing_record_type("AAAA", record_name, aaaa_record_name_set, local_ipv6)
+      |> maybe_add_missing_record_type(
+        "A",
+        record_name,
+        a_record_name_set,
+        local_ipv4,
+        existing_record_types
+      )
+      |> maybe_add_missing_record_type(
+        "AAAA",
+        record_name,
+        aaaa_record_name_set,
+        local_ipv6,
+        existing_record_types
+      )
 
     Enum.flat_map(record_types_to_create, fn {record_type, record_ip} ->
       Logger.info("Creating missing DNS record: #{record_type} #{record_name}")
@@ -262,9 +268,11 @@ defmodule Defdo.Cloudflare.Monitor do
          record_type,
          record_name,
          monitored_names,
-         detected_ip
+         detected_ip,
+         existing_record_types
        ) do
-    if MapSet.member?(monitored_names, record_name) do
+    if MapSet.member?(monitored_names, record_name) and
+         not MapSet.member?(existing_record_types, record_type) do
       if is_binary(detected_ip) and detected_ip != "" do
         [{record_type, detected_ip} | acc]
       else
@@ -276,6 +284,70 @@ defmodule Defdo.Cloudflare.Monitor do
       end
     else
       acc
+    end
+  end
+
+  defp maybe_create_missing_ip_records(
+         zone_id,
+         record_name,
+         records,
+         local_ipv4,
+         local_ipv6,
+         a_record_name_set,
+         aaaa_record_name_set,
+         cname_record_names,
+         auto_create_missing_records
+       ) do
+    cond do
+      MapSet.member?(cname_record_names, record_name) ->
+        if Enum.empty?(records) do
+          Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
+
+          Logger.info(
+            "Skipping A auto-create for '#{record_name}' because it is managed as CNAME"
+          )
+        end
+
+        []
+
+      Enum.empty?(records) and auto_create_missing_records ->
+        Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
+
+        create_missing_ip_records(
+          zone_id,
+          record_name,
+          local_ipv4,
+          local_ipv6,
+          a_record_name_set,
+          aaaa_record_name_set,
+          records
+        )
+
+      Enum.empty?(records) ->
+        Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
+        Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
+        []
+
+      not auto_create_missing_records ->
+        []
+
+      Enum.any?(records, &(&1["type"] == "CNAME")) ->
+        Logger.warning(
+          "Skipping A/AAAA auto-create for '#{record_name}': CNAME record already exists"
+        )
+
+        []
+
+      true ->
+        create_missing_ip_records(
+          zone_id,
+          record_name,
+          local_ipv4,
+          local_ipv6,
+          a_record_name_set,
+          aaaa_record_name_set,
+          records
+        )
     end
   end
 

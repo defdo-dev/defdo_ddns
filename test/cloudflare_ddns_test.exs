@@ -109,6 +109,19 @@ defmodule Defdo.Cloudflare.DDNSTest do
       assert "*.app.zone-two.example" in zone_two_records
       assert "app.zone-two.example" in zone_two_records
     end
+
+    test "treats @ as root domain and never builds invalid @.domain hostnames" do
+      Application.put_env(:defdo_ddns, Cloudflare,
+        domain_mappings: %{
+          "paridin.net" => ["@", "h"]
+        }
+      )
+
+      records = DDNS.records_to_monitor("paridin.net")
+
+      assert records == ["paridin.net", "h.paridin.net"]
+      refute "@.paridin.net" in records
+    end
   end
 
   describe "input_for_update_dns_records/2" do

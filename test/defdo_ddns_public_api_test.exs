@@ -5,7 +5,7 @@ defmodule Defdo.DDNSPublicAPITest do
   alias Defdo.DDNS
 
   defmodule FakeDDNS do
-    def get_zone_id("defdo.in"), do: "zone_123"
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
     def get_zone_id(_), do: nil
 
     def list_dns_records("zone_123", name: _name), do: []
@@ -38,12 +38,15 @@ defmodule Defdo.DDNSPublicAPITest do
   end
 
   test "configured_domains/0 aggregates A and AAAA domain mappings" do
+    domain_a = random_domain()
+    domain_aaaa = random_domain()
+
     Application.put_env(:defdo_ddns, Cloudflare,
-      domain_mappings: %{"example.com" => ["www"]},
-      aaaa_domain_mappings: %{"ipv6-only.net" => ["api"]}
+      domain_mappings: %{domain_a => ["www"]},
+      aaaa_domain_mappings: %{domain_aaaa => ["api"]}
     )
 
-    assert DDNS.configured_domains() |> Enum.sort() == ["example.com", "ipv6-only.net"]
+    assert DDNS.configured_domains() |> Enum.sort() == Enum.sort([domain_a, domain_aaaa])
   end
 
   test "checkup/0 falls back to one-shot mode when monitor is not running" do
@@ -60,6 +63,9 @@ defmodule Defdo.DDNSPublicAPITest do
   end
 
   test "upsert_free_domain/1 delegates to internal DNS API module" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
     Application.put_env(:defdo_ddns, Defdo.DDNS.API,
       ddns_module: FakeDDNS,
       default_target: "@",
@@ -68,15 +74,19 @@ defmodule Defdo.DDNSPublicAPITest do
 
     assert {:ok, %{action: "created", record: record}} =
              DDNS.upsert_free_domain(%{
-               "fqdn" => "acme-idp.defdo.in",
-               "base_domain" => "defdo.in"
+               "fqdn" => fqdn,
+               "base_domain" => base_domain
              })
 
-    assert record["name"] == "acme-idp.defdo.in"
-    assert record["content"] == "defdo.in"
+    assert record["name"] == fqdn
+    assert record["content"] == base_domain
     assert record["ttl"] == 1
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp random_domain do
+    "zone-#{System.unique_integer([:positive])}.example.test"
+  end
 end

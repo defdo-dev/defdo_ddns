@@ -8,7 +8,7 @@ defmodule Defdo.DDNS.APITest do
   alias Defdo.DDNS.API.Router
 
   defmodule FakeCreateDDNS do
-    def get_zone_id("defdo.in"), do: "zone_123"
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
     def get_zone_id(_), do: nil
 
     def list_dns_records("zone_123", name: _name), do: []
@@ -22,7 +22,7 @@ defmodule Defdo.DDNS.APITest do
   end
 
   defmodule FakeConflictDDNS do
-    def get_zone_id("defdo.in"), do: "zone_123"
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
     def get_zone_id(_), do: nil
 
     def list_dns_records("zone_123", name: name) do
@@ -49,6 +49,9 @@ defmodule Defdo.DDNS.APITest do
   end
 
   test "DNS.upsert_free_domain/1 creates CNAME record when missing" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
     Application.put_env(:defdo_ddns, Defdo.DDNS.API,
       ddns_module: FakeCreateDDNS,
       default_target: "@",
@@ -57,17 +60,20 @@ defmodule Defdo.DDNS.APITest do
 
     assert {:ok, %{action: "created", record: record}} =
              DNS.upsert_free_domain(%{
-               "fqdn" => "acme-idp.defdo.in",
-               "base_domain" => "defdo.in"
+               "fqdn" => fqdn,
+               "base_domain" => base_domain
              })
 
-    assert record["name"] == "acme-idp.defdo.in"
-    assert record["content"] == "defdo.in"
+    assert record["name"] == fqdn
+    assert record["content"] == base_domain
     assert record["type"] == "CNAME"
     assert record["ttl"] == 1
   end
 
   test "DNS.upsert_free_domain/1 returns conflict when non-CNAME record exists" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
     Application.put_env(:defdo_ddns, Defdo.DDNS.API,
       ddns_module: FakeConflictDDNS,
       default_target: "@",
@@ -76,18 +82,22 @@ defmodule Defdo.DDNS.APITest do
 
     assert {:error, {:conflict, %{types: ["A"]}}} =
              DNS.upsert_free_domain(%{
-               "fqdn" => "acme-idp.defdo.in",
-               "base_domain" => "defdo.in"
+               "fqdn" => fqdn,
+               "base_domain" => base_domain
              })
   end
 
   test "DNS.upsert_free_domain/1 validates fqdn zone" do
+    base_domain = random_domain()
+    other_domain = random_domain()
+    fqdn = "acme-idp.#{other_domain}"
+
     Application.put_env(:defdo_ddns, Defdo.DDNS.API, ddns_module: FakeCreateDDNS)
 
     assert {:error, {:validation, %{"fqdn" => "must belong to base_domain"}}} =
              DNS.upsert_free_domain(%{
-               "fqdn" => "acme-idp.other.in",
-               "base_domain" => "defdo.in"
+               "fqdn" => fqdn,
+               "base_domain" => base_domain
              })
   end
 
@@ -107,6 +117,9 @@ defmodule Defdo.DDNS.APITest do
   end
 
   test "router upsert returns success payload" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
     Application.put_env(:defdo_ddns, Defdo.DDNS.API,
       token: "secret",
       ddns_module: FakeCreateDDNS,
@@ -114,7 +127,7 @@ defmodule Defdo.DDNS.APITest do
       default_proxied: true
     )
 
-    payload = %{"fqdn" => "acme-idp.defdo.in", "base_domain" => "defdo.in"}
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
 
     conn =
       conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
@@ -135,5 +148,9 @@ defmodule Defdo.DDNS.APITest do
 
     assert conn.status == 200
     assert %{"status" => "ok"} = Jason.decode!(conn.resp_body)
+  end
+
+  defp random_domain do
+    "zone-#{System.unique_integer([:positive])}.example.test"
   end
 end

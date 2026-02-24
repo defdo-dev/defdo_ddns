@@ -1,3 +1,10 @@
+# 0.3.1
+
+## 🐛 Bug Fixes
+
+- Fixed `A/AAAA` auto-create behavior when a hostname already has non-IP records (`TXT`, `MX`, etc.):
+  - the monitor now creates missing `A/AAAA` by record type and only skips when a conflicting `CNAME` exists.
+
 # 0.3.0
 
 ## ✨ New Features
@@ -16,6 +23,8 @@
 
 - Added one-shot monitor execution path (`Defdo.Cloudflare.Monitor.checkup_once/0`) so checkups can run without a running monitor process.
 - Hardened monitor tests to avoid external network/API dependency during test runs.
+- Fixed domain mapping normalization for root marker `@`:
+  - `@` is now treated as the zone root (e.g. `paridin.net`) instead of generating invalid names like `@.paridin.net`.
 
 ## 📦 Packaging & Release
 

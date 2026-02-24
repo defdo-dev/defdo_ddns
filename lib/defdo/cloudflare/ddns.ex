@@ -500,6 +500,7 @@ defmodule Defdo.Cloudflare.DDNS do
       subdomains when is_list(subdomains) ->
         subdomains
         |> Enum.map(&normalize_subdomain(&1, domain))
+        |> Enum.reject(&(&1 == domain))
         |> Enum.uniq()
     end
   end
@@ -682,6 +683,10 @@ defmodule Defdo.Cloudflare.DDNS do
     wildcard_target = String.trim_leading(clean_subdomain, "*.")
 
     cond do
+      # Root marker, e.g. "@" => "example.com"
+      clean_subdomain == "@" ->
+        domain
+
       # Relative wildcard, e.g. "*.idp-dev" => "*.idp-dev.example.com"
       String.starts_with?(clean_subdomain, "*.") and not String.contains?(wildcard_target, ".") ->
         "#{clean_subdomain}.#{domain}"
