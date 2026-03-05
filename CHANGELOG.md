@@ -1,3 +1,31 @@
+# 0.3.2
+
+## ✨ New Features
+
+- Added multi-tenant-light API auth mode with client credentials and domain scope enforcement.
+  - New runtime config: `DDNS_API_CLIENTS_JSON`.
+  - New runtime flag: `DDNS_API_ALLOW_RUNTIME_CLIENTS` (deny-all bootstrap until runtime client injection).
+- Added ETS-backed in-memory auth store (`Defdo.DDNS.API.AuthStore`) for fast per-request client lookup.
+- Added public runtime API for embedded integrations:
+  - `Defdo.DDNS.set_api_clients/1`
+  - `Defdo.DDNS.clear_api_clients/0`
+  - `Defdo.DDNS.api_clients/0`
+
+## 🐛 Bug Fixes
+
+- Hardened API auth token verification with timing-safe comparison.
+- Added API auth fail-fast startup validation:
+  - when `DDNS_API_ENABLED=true`, requires `DDNS_API_TOKEN` or `DDNS_API_CLIENTS_JSON`
+  - unless `DDNS_API_ALLOW_RUNTIME_CLIENTS=true`.
+- Fixed DNS API params parsing to preserve explicit `proxied=false` in upsert payloads.
+- Enforced `base_domain` allowlist validation in client-auth mode before DNS upsert execution.
+
+## 📚 Documentation
+
+- Expanded README with:
+  - multi-tenant-light auth config and request headers
+  - `defdo_auth` integration guidance (HTTP and embedded runtime injection modes).
+
 # 0.3.1
 
 ## 🐛 Bug Fixes

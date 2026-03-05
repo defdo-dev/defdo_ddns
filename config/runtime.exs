@@ -35,6 +35,9 @@ config :defdo_ddns, Defdo.DDNS.API,
   enabled: Defdo.ConfigHelper.parse_boolean_env("DDNS_API_ENABLED", false),
   port: api_port,
   token: System.get_env("DDNS_API_TOKEN"),
+  clients: Defdo.ConfigHelper.parse_json_env("DDNS_API_CLIENTS_JSON", []),
+  allow_runtime_clients:
+    Defdo.ConfigHelper.parse_boolean_env("DDNS_API_ALLOW_RUNTIME_CLIENTS", false),
   default_target: System.get_env("DDNS_API_DEFAULT_TARGET", "@"),
   default_proxied: Defdo.ConfigHelper.parse_boolean_env("DDNS_API_DEFAULT_PROXIED", true)
 

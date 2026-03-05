@@ -87,6 +87,27 @@ defmodule Defdo.DDNS.APITest do
              })
   end
 
+  test "DNS.upsert_free_domain/1 preserves explicit proxied=false" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeCreateDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    assert {:ok, %{action: "created", record: record}} =
+             DNS.upsert_free_domain(%{
+               "fqdn" => fqdn,
+               "base_domain" => base_domain,
+               "proxied" => false
+             })
+
+    assert record["proxied"] == false
+    assert record["ttl"] == 300
+  end
+
   test "DNS.upsert_free_domain/1 validates fqdn zone" do
     base_domain = random_domain()
     other_domain = random_domain()
@@ -139,6 +160,207 @@ defmodule Defdo.DDNS.APITest do
 
     assert %{"status" => "ok", "result" => %{"action" => "created"}} =
              Jason.decode!(conn.resp_body)
+  end
+
+  test "router accepts x-api-token header" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      token: "secret",
+      ddns_module: FakeCreateDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-api-token", "secret")
+      |> Router.call([])
+
+    assert conn.status == 200
+
+    assert %{"status" => "ok", "result" => %{"action" => "created"}} =
+             Jason.decode!(conn.resp_body)
+  end
+
+  test "router authorizes client mode with x-client-id and token" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      clients: [
+        %{
+          "id" => "tenant-a",
+          "token" => "tenant-secret",
+          "allowed_base_domains" => [base_domain]
+        }
+      ],
+      ddns_module: FakeCreateDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-client-id", "tenant-a")
+      |> put_req_header("x-api-token", "tenant-secret")
+      |> Router.call([])
+
+    assert conn.status == 200
+
+    assert %{"status" => "ok", "result" => %{"action" => "created"}} =
+             Jason.decode!(conn.resp_body)
+  end
+
+  test "router allows global token fallback when clients are configured and x-client-id is missing" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      token: "global-secret",
+      clients: [
+        %{
+          "id" => "tenant-a",
+          "token" => "tenant-secret",
+          "allowed_base_domains" => [base_domain]
+        }
+      ],
+      ddns_module: FakeCreateDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer global-secret")
+      |> Router.call([])
+
+    assert conn.status == 200
+
+    assert %{"status" => "ok", "result" => %{"action" => "created"}} =
+             Jason.decode!(conn.resp_body)
+  end
+
+  test "router does not use global fallback when x-client-id is present and invalid" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      token: "global-secret",
+      clients: [
+        %{
+          "id" => "tenant-a",
+          "token" => "tenant-secret",
+          "allowed_base_domains" => [base_domain]
+        }
+      ],
+      ddns_module: FakeCreateDDNS
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-client-id", "tenant-b")
+      |> put_req_header("authorization", "Bearer global-secret")
+      |> Router.call([])
+
+    assert conn.status == 401
+    assert %{"error" => "unauthorized"} = Jason.decode!(conn.resp_body)
+  end
+
+  test "router rejects client mode request without x-client-id" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      clients: [
+        %{
+          "id" => "tenant-a",
+          "token" => "tenant-secret",
+          "allowed_base_domains" => [base_domain]
+        }
+      ],
+      ddns_module: FakeCreateDDNS
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-api-token", "tenant-secret")
+      |> Router.call([])
+
+    assert conn.status == 401
+    assert %{"error" => "unauthorized"} = Jason.decode!(conn.resp_body)
+  end
+
+  test "router rejects base_domain outside allowed client scope" do
+    allowed_base_domain = random_domain()
+    denied_base_domain = random_domain()
+    fqdn = "acme-idp.#{denied_base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      clients: [
+        %{
+          "id" => "tenant-a",
+          "token" => "tenant-secret",
+          "allowed_base_domains" => [allowed_base_domain]
+        }
+      ],
+      ddns_module: FakeCreateDDNS
+    )
+
+    payload = %{"fqdn" => fqdn, "base_domain" => denied_base_domain}
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-client-id", "tenant-a")
+      |> put_req_header("x-api-token", "tenant-secret")
+      |> Router.call([])
+
+    assert conn.status == 422
+
+    assert %{"error" => "validation_failed", "details" => %{"base_domain" => _}} =
+             Jason.decode!(conn.resp_body)
+  end
+
+  test "router denies upsert when token is not configured" do
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API, ddns_module: FakeCreateDDNS)
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(%{}))
+      |> put_req_header("content-type", "application/json")
+      |> Router.call([])
+
+    assert conn.status == 401
+    assert %{"error" => "unauthorized"} = Jason.decode!(conn.resp_body)
+  end
+
+  test "router denies upsert when token is blank" do
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API, token: "   ", ddns_module: FakeCreateDDNS)
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(%{}))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> Router.call([])
+
+    assert conn.status == 401
+    assert %{"error" => "unauthorized"} = Jason.decode!(conn.resp_body)
   end
 
   test "router health endpoint works" do

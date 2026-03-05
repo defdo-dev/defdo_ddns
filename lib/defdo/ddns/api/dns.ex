@@ -185,14 +185,37 @@ defmodule Defdo.DDNS.API.DNS do
   end
 
   defp fetch_param(params, key) when is_binary(key) do
+    case key_to_atom(key) do
+      nil ->
+        Map.get(params, key)
+
+      atom_key ->
+        fetch_string_or_atom_key(params, key, atom_key)
+    end
+  end
+
+  defp key_to_atom(key) do
     case key do
-      "fqdn" -> Map.get(params, "fqdn") || Map.get(params, :fqdn)
-      "base_domain" -> Map.get(params, "base_domain") || Map.get(params, :base_domain)
-      "record_type" -> Map.get(params, "record_type") || Map.get(params, :record_type)
-      "target" -> Map.get(params, "target") || Map.get(params, :target)
-      "proxied" -> Map.get(params, "proxied") || Map.get(params, :proxied)
-      "ttl" -> Map.get(params, "ttl") || Map.get(params, :ttl)
-      _ -> Map.get(params, key)
+      "fqdn" -> :fqdn
+      "base_domain" -> :base_domain
+      "record_type" -> :record_type
+      "target" -> :target
+      "proxied" -> :proxied
+      "ttl" -> :ttl
+      _ -> nil
+    end
+  end
+
+  defp fetch_string_or_atom_key(params, string_key, atom_key) do
+    cond do
+      Map.has_key?(params, string_key) ->
+        Map.get(params, string_key)
+
+      Map.has_key?(params, atom_key) ->
+        Map.get(params, atom_key)
+
+      true ->
+        nil
     end
   end
 

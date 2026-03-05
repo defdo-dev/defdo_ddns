@@ -124,12 +124,18 @@ Checkup completed
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
 | `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
-| `DDNS_API_TOKEN` | ❌ No | - | Bearer token (or `x-api-token`) for API auth |
+| `DDNS_API_TOKEN` | ⚠️ Conditional*** | - | Global API token fallback (single-client mode) |
+| `DDNS_API_CLIENTS_JSON` | ⚠️ Conditional*** | `[]` | Multi-tenant-light clients (`id`, `token`, `allowed_base_domains`) |
+| `DDNS_API_ALLOW_RUNTIME_CLIENTS` | ❌ No | `false` | Allow API startup without token/clients (deny-all until runtime injection) |
 | `DDNS_API_DEFAULT_TARGET` | ❌ No | `@` | Default CNAME target used by API upsert |
 | `DDNS_API_DEFAULT_PROXIED` | ❌ No | `true` | Default proxied mode used by API upsert |
 
 \* Required unless `CLOUDFLARE_A_RECORDS_JSON` or `CLOUDFLARE_AAAA_RECORDS_JSON` is provided.
 \** In `test` environment the default is `false` to avoid background network checks during test runs.
+\*** When `DDNS_API_ENABLED=true`, configure at least one auth mode:
+- `DDNS_API_TOKEN` (legacy single-client), or
+- `DDNS_API_CLIENTS_JSON` (multi-tenant-light), or
+- `DDNS_API_ALLOW_RUNTIME_CLIENTS=true` and inject clients at runtime.
 
 ### Managed CNAME Records (Text Env via JSON)
 
@@ -165,10 +171,28 @@ Enable it with:
 -e DDNS_API_TOKEN="replace-with-strong-token"
 ```
 
+Multi-tenant-light mode with client credentials:
+
+```bash
+-e DDNS_API_ENABLED=true \
+-e DDNS_API_PORT=4050 \
+-e DDNS_API_CLIENTS_JSON='[
+  {"id":"tenant-a","token":"tenant-a-secret","allowed_base_domains":["defdo.in"]},
+  {"id":"tenant-b","token":"tenant-b-secret","allowed_base_domains":["defdo.dev","example.com"]}
+]'
+```
+
 Endpoints:
 
 - `GET /health` returns `{ "status": "ok" }`.
 - `POST /v1/dns/upsert` upserts a CNAME record for a FQDN under a base zone.
+
+Auth headers:
+
+- `Authorization: Bearer <token>` or `x-api-token: <token>`
+- In multi-tenant-light mode (`DDNS_API_CLIENTS_JSON` or runtime clients), also send `x-client-id: <client-id>`.
+- `base_domain` is validated against that client's `allowed_base_domains`.
+- If clients are configured and `x-client-id` is omitted, a valid global token (`DDNS_API_TOKEN`) is accepted as fallback.
 
 Example request:
 
@@ -177,6 +201,50 @@ curl -X POST "http://localhost:4050/v1/dns/upsert" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${DDNS_API_TOKEN}" \
   -d '{"fqdn":"acme-idp.defdo.in","base_domain":"defdo.in","target":"@","proxied":true}'
+```
+
+Multi-tenant-light request:
+
+```bash
+curl -X POST "http://localhost:4050/v1/dns/upsert" \
+  -H "Content-Type: application/json" \
+  -H "x-client-id: tenant-a" \
+  -H "x-api-token: tenant-a-secret" \
+  -d '{"fqdn":"acme-idp.defdo.in","base_domain":"defdo.in","target":"@","proxied":false}'
+```
+
+### defdo_auth Integration (multi-tenant-light)
+
+`defdo_ddns` can stay stateless and only enforce technical authorization + DNS rules.
+`defdo_auth` (or another upstream service) should own tenant/business data and send authorized calls.
+
+Recommended split:
+
+1. `defdo_auth` stores tenant/client data and decides who can upsert which domain.
+2. `defdo_auth` calls `defdo_ddns` HTTP API with `x-client-id`, token, and DNS payload.
+3. `defdo_ddns` validates token + allowed base domain and executes DNS upsert idempotently.
+
+If `defdo_auth` embeds this library in the same BEAM VM, you can inject credentials in memory (ETS-backed):
+
+```elixir
+clients = [
+  %{
+    "id" => "tenant-a",
+    "token" => "tenant-a-secret",
+    "allowed_base_domains" => ["defdo.in"]
+  }
+]
+
+:ok = Defdo.DDNS.set_api_clients(clients)
+safe_view = Defdo.DDNS.api_clients()               # token redacted
+raw_view = Defdo.DDNS.api_clients(redact: false)   # trusted local debugging only
+```
+
+To boot in deny-all mode until runtime injection:
+
+```bash
+-e DDNS_API_ENABLED=true \
+-e DDNS_API_ALLOW_RUNTIME_CLIENTS=true
 ```
 
 ## 📋 Advanced Usage
