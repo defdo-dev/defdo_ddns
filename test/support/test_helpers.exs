@@ -16,6 +16,8 @@ defmodule Defdo.TestHelpers do
       },
       auto_create_missing_records: false
     )
+
+    Code.ensure_loaded?(Defdo.Cloudflare.DDNS)
   end
 
   @doc """

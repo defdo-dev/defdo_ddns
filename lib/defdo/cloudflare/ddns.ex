@@ -462,20 +462,24 @@ defmodule Defdo.Cloudflare.DDNS do
   @doc """
   Retrieve configured CNAME records normalized for a specific zone/domain.
 
-  Config comes from `CLOUDFLARE_CNAME_RECORDS_JSON`.
+  Records come from the configured DDNS record store. The store may be
+  bootstrapped from a snapshot file, init file, or legacy env JSON seed.
   Supported keys per entry:
-  - `name` (required): `@`, relative host (e.g. `www`), wildcard (e.g. `*.idp-dev`) or FQDN.
-  - `target` (required): `@`, relative host or FQDN.
-  - `proxied` (optional): boolean; defaults to `CLOUDFLARE_PROXY_A_RECORDS`.
-  - `ttl` (optional): integer/string; proxied records force TTL `1`.
-  - `domain` (optional): restrict entry to a specific zone.
+  - `provider`
+  - `domain`
+  - `type`
+  - `name`
+  - `content`
+  - `ttl`
+  - `proxied`
+  - `metadata`
   """
   @spec get_cname_records_for_domain(String.t()) :: list(map())
   def get_cname_records_for_domain(domain) when is_binary(domain) do
     default_proxied = get_cloudflare_key(:proxy_a_records, false)
 
-    get_cloudflare_key(:cname_records, [])
-    |> List.wrap()
+    Defdo.DDNS.RecordStore.records()
+    |> Enum.filter(&(record_type(&1) == "CNAME"))
     |> Enum.flat_map(&normalize_cname_record_config(&1, domain, default_proxied))
     |> Enum.uniq_by(&{&1["name"], &1["content"], &1["proxied"], &1["ttl"]})
   end
@@ -772,12 +776,12 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   defp normalize_cname_target(config, domain) do
-    case get_config_string(config, "target") do
+    case get_config_string(config, "content") || get_config_string(config, "target") do
       nil ->
-        {:error, "missing target"}
+        {:error, "missing content"}
 
       "" ->
-        {:error, "missing target"}
+        {:error, "missing content"}
 
       "@" ->
         {:ok, domain}
@@ -814,12 +818,46 @@ defmodule Defdo.Cloudflare.DDNS do
 
   defp get_config_value(config, key) when is_map(config) and is_binary(key) do
     case key do
-      "name" -> Map.get(config, "name", Map.get(config, :name))
-      "target" -> Map.get(config, "target", Map.get(config, :target))
-      "proxied" -> Map.get(config, "proxied", Map.get(config, :proxied))
-      "ttl" -> Map.get(config, "ttl", Map.get(config, :ttl))
-      "domain" -> Map.get(config, "domain", Map.get(config, :domain))
-      _ -> nil
+      "name" ->
+        Map.get(config, "name", Map.get(config, :name))
+
+      "content" ->
+        Map.get(
+          config,
+          "content",
+          Map.get(config, :content, Map.get(config, "target", Map.get(config, :target)))
+        )
+
+      "target" ->
+        Map.get(config, "target", Map.get(config, :target))
+
+      "proxied" ->
+        Map.get(config, "proxied", Map.get(config, :proxied))
+
+      "ttl" ->
+        Map.get(config, "ttl", Map.get(config, :ttl))
+
+      "domain" ->
+        Map.get(config, "domain", Map.get(config, :domain))
+
+      "type" ->
+        Map.get(config, "type", Map.get(config, :type))
+
+      "provider" ->
+        Map.get(config, "provider", Map.get(config, :provider))
+
+      "metadata" ->
+        Map.get(config, "metadata", Map.get(config, :metadata))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp record_type(record) when is_map(record) do
+    case get_config_string(record, "type") do
+      nil -> nil
+      type -> String.upcase(type)
     end
   end
 

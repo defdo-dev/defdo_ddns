@@ -3,6 +3,26 @@ defmodule Defdo.Cloudflare.DDNSTest do
   use ExUnit.Case
   alias Defdo.Cloudflare.DDNS
 
+  setup do
+    previous_cloudflare_config = Application.get_env(:defdo_ddns, Cloudflare)
+    previous_record_store_config = Application.get_env(:defdo_ddns, Defdo.DDNS.RecordStore)
+
+    on_exit(fn ->
+      restore_env(:defdo_ddns, Cloudflare, previous_cloudflare_config)
+      restore_env(:defdo_ddns, Defdo.DDNS.RecordStore, previous_record_store_config)
+      Defdo.DDNS.RecordStore.reload()
+    end)
+
+    :ok
+  end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp reload_record_store! do
+    assert :ok = Defdo.DDNS.RecordStore.reload()
+  end
+
   describe "configuration parsing" do
     test "get_subdomains_for_domain/1 returns correct subdomains" do
       Application.put_env(:defdo_ddns, Cloudflare,
@@ -419,6 +439,8 @@ defmodule Defdo.Cloudflare.DDNSTest do
         ]
       )
 
+      reload_record_store!()
+
       records = DDNS.get_cname_records_for_domain("example.com")
 
       assert %{
@@ -449,6 +471,8 @@ defmodule Defdo.Cloudflare.DDNSTest do
           %{"domain" => "example.org", "name" => "join", "target" => "@"}
         ]
       )
+
+      reload_record_store!()
 
       example_com = DDNS.get_cname_records_for_domain("example.com")
       example_org = DDNS.get_cname_records_for_domain("example.org")

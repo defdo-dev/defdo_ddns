@@ -119,7 +119,11 @@ Checkup completed
 | `AUTO_CREATE_DNS_RECORDS` | ❌ No | `false` | Auto-create missing DNS records |
 | `CLOUDFLARE_PROXY_A_RECORDS` | ❌ No | `false` | Force Cloudflare proxy mode (`proxied=true`) for `A/AAAA` records |
 | `CLOUDFLARE_PROXY_EXCLUDE` | ❌ No | `""` | Comma/space-separated host patterns to keep `DNS only` even when proxy mode is enabled. Supports exact hosts and wildcard suffixes (`*.idp-dev.example.com`) |
-| `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | JSON array of managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
+| `DDNS_RECORD_SNAPSHOT_PATH` | ❌ No | `""` | Portable runtime snapshot file path. Used as the preferred bootstrap source and persistence target |
+| `DDNS_RECORD_INIT_PATH` | ❌ No | `""` | Optional init snapshot path used when no runtime snapshot exists yet |
+| `DDNS_ALLOW_EMPTY_RECORDS` | ❌ No | `false` | Allow booting the record store with an empty runtime state (defaults to `true` in `test`) |
+| `DDNS_PERSIST_RUNTIME_RECORDS` | ❌ No | `false` | Persist runtime record changes back to the snapshot path |
+| `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | Legacy seed JSON for managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
 | `DDNS_ENABLE_MONITOR` | ❌ No | `true`** | Enable/disable background monitor process |
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
@@ -137,10 +141,44 @@ Checkup completed
 - `DDNS_API_CLIENTS_JSON` (multi-tenant-light), or
 - `DDNS_API_ALLOW_RUNTIME_CLIENTS=true` and inject clients at runtime.
 
-### Managed CNAME Records (Text Env via JSON)
+### Runtime Record Store
 
-`CLOUDFLARE_CNAME_RECORDS_JSON` is a plain text env var that contains JSON.
-This lets you keep records declarative without adding a database.
+Runtime DDNS records live in ETS.
+The store bootstraps in this order:
+
+1. `DDNS_RECORD_SNAPSHOT_PATH`
+2. `DDNS_RECORD_INIT_PATH`
+3. `CLOUDFLARE_CNAME_RECORDS_JSON` legacy seed
+4. empty state only when `DDNS_ALLOW_EMPTY_RECORDS=true`
+
+Use the runtime facade when you need to inspect or export state from a release, container, or embedded deployment:
+
+```elixir
+Defdo.DDNS.RecordStore.status()
+Defdo.DDNS.RecordStore.list_records()
+Defdo.DDNS.RecordStore.export_snapshot()
+Defdo.DDNS.RecordStore.write_snapshot("/mnt/data/defdo-ddns/records.json")
+Defdo.DDNS.RecordStore.persist()
+Defdo.DDNS.RecordStore.reload()
+```
+
+Operational notes:
+
+- Runtime records live in ETS for the current process lifetime.
+- `status/0` is safe for diagnostics and only reports metadata, counts, paths, and flags. `diagnostics/0` is an alias.
+- `reload/0` is explicit; changes to env, init files, or snapshot files are not picked up automatically.
+- `export_snapshot/1` lets you inspect or export the current runtime state.
+- `write_snapshot/2` writes a portable snapshot to an explicit file path.
+- `persist/1` writes to the configured snapshot path when one is set.
+- If you mount a volume for `DDNS_RECORD_SNAPSHOT_PATH`, runtime changes can survive restarts.
+- If you do not mount a volume, the runtime state is still kept in ETS for the process lifetime, but it becomes ephemeral and must be re-seeded on boot.
+- For TrueNAS or release deployments, prefer a persistent volume such as `/var/lib/defdo_ddns` and set:
+  - `DDNS_RECORD_SNAPSHOT_PATH=/var/lib/defdo_ddns/records.json`
+  - `DDNS_RECORD_INIT_PATH=/etc/defdo_ddns/init_records.json` when you want a boot seed
+  - `DDNS_ALLOW_EMPTY_RECORDS=false` in production
+  - `DDNS_PERSIST_RUNTIME_RECORDS=true` when runtime edits should survive restarts
+- Do not use `CLOUDFLARE_CNAME_RECORDS_JSON` for large datasets; keep it as a deprecated legacy seed only.
+- A future host app can implement `Defdo.DDNS.RecordStore` as a DB-backed adapter and reuse `Defdo.DDNS.RecordSnapshot` for import/export interchange without adding Ecto to `defdo_ddns`.
 
 Example:
 
@@ -159,6 +197,7 @@ Rules:
 - `domain` is optional and limits an entry to one zone (recommended in multi-domain setups).
 - If `proxied=true`, TTL is forced to `1` (Cloudflare Auto TTL).
 - If a hostname is managed as CNAME, this app skips auto-creating `A` for that same name.
+- Treat this as a legacy seed only; prefer snapshot files or runtime APIs for ongoing edits.
 
 ### Optional HTTP API (Bandit)
 

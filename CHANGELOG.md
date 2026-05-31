@@ -1,3 +1,36 @@
+# Unreleased
+
+## ✨ New Features
+
+- Added safe runtime diagnostics for DDNS record store metadata, counts, source, and persistence flags.
+- Hardened bootstrap behavior for empty-state handling and malformed snapshot/init sources.
+- Documented release/TrueNAS record-store operations and adapter boundaries.
+
+# 0.3.3
+
+## ✨ New Features
+
+- Added portable DDNS snapshot codec (`Defdo.DDNS.RecordSnapshot`) for canonical record normalization, JSON encode/decode, and legacy CNAME seed conversion.
+- Added runtime record store APIs for release-safe export and persistence:
+  - `Defdo.DDNS.RecordStore.list_records/1`
+  - `Defdo.DDNS.RecordStore.export_snapshot/1`
+  - `Defdo.DDNS.RecordStore.write_snapshot/2`
+  - `Defdo.DDNS.RecordStore.persist/1`
+  - `Defdo.DDNS.RecordStore.reload/1`
+- Added ETS-backed file store bootstrap precedence for DDNS records:
+  - snapshot file
+  - init file
+  - legacy CNAME env seed
+  - explicit empty state when allowed
+
+## 🐛 Bug Fixes
+
+- Moved DDNS record snapshot serialization out of the store adapter so future host apps can reuse the same snapshot/export primitives for database-backed adapters.
+
+## 📚 Documentation
+
+- Updated README to document runtime record store behavior, snapshot/init paths, and the legacy status of `CLOUDFLARE_CNAME_RECORDS_JSON`.
+
 # 0.3.2
 
 ## ✨ New Features

@@ -12,6 +12,7 @@ defmodule Defdo.DDNS.Application do
   def start(_type, _args) do
     children =
       []
+      |> maybe_add_record_store()
       |> maybe_add_monitor()
       |> maybe_add_api_server()
 
@@ -28,6 +29,10 @@ defmodule Defdo.DDNS.Application do
       Logger.info("Defdo.DDNS monitor disabled (DDNS_ENABLE_MONITOR=false)")
       children
     end
+  end
+
+  defp maybe_add_record_store(children) do
+    children ++ [Defdo.DDNS.RecordStore.child_spec()]
   end
 
   defp maybe_add_api_server(children) do

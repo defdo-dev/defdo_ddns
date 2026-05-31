@@ -6,6 +6,7 @@ import Config
 api_port = Defdo.ConfigHelper.parse_integer_env("DDNS_API_PORT", 4050, min: 1, max: 65_535)
 
 monitor_enabled_default = config_env() != :test
+record_store_allow_empty_default = config_env() == :test
 
 config :defdo_ddns, Cloudflare,
   auth_token: System.get_env("CLOUDFLARE_API_TOKEN"),
@@ -24,6 +25,19 @@ config :defdo_ddns, Cloudflare,
   proxy_a_records: Defdo.ConfigHelper.parse_boolean_env("CLOUDFLARE_PROXY_A_RECORDS", false),
   proxy_exclude: Defdo.ConfigHelper.parse_list_env("CLOUDFLARE_PROXY_EXCLUDE", []),
   cname_records: Defdo.ConfigHelper.parse_json_env("CLOUDFLARE_CNAME_RECORDS_JSON", [])
+
+config :defdo_ddns, Defdo.DDNS.RecordStore,
+  module: Defdo.DDNS.RecordStores.FileEtsStore,
+  options: [],
+  runtime_snapshot_path: System.get_env("DDNS_RECORD_SNAPSHOT_PATH"),
+  init_file_path: System.get_env("DDNS_RECORD_INIT_PATH"),
+  allow_empty_records:
+    Defdo.ConfigHelper.parse_boolean_env(
+      "DDNS_ALLOW_EMPTY_RECORDS",
+      record_store_allow_empty_default
+    ),
+  persist_runtime_changes:
+    Defdo.ConfigHelper.parse_boolean_env("DDNS_PERSIST_RUNTIME_RECORDS", false)
 
 config :defdo_ddns,
   monitor_enabled:

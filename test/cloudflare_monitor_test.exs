@@ -5,12 +5,15 @@ defmodule Defdo.Cloudflare.MonitorTest do
 
   setup do
     previous_cloudflare_config = Application.get_env(:defdo_ddns, Cloudflare)
+    previous_record_store_config = Application.get_env(:defdo_ddns, Defdo.DDNS.RecordStore)
 
     Application.put_env(:defdo_ddns, Cloudflare,
       domain_mappings: %{},
       aaaa_domain_mappings: %{},
       cname_records: []
     )
+
+    assert :ok = Defdo.DDNS.RecordStore.reload()
 
     on_exit(fn ->
       if Process.whereis(Monitor) do
@@ -22,6 +25,14 @@ defmodule Defdo.Cloudflare.MonitorTest do
       else
         Application.put_env(:defdo_ddns, Cloudflare, previous_cloudflare_config)
       end
+
+      if previous_record_store_config == nil do
+        Application.delete_env(:defdo_ddns, Defdo.DDNS.RecordStore)
+      else
+        Application.put_env(:defdo_ddns, Defdo.DDNS.RecordStore, previous_record_store_config)
+      end
+
+      Defdo.DDNS.RecordStore.reload()
     end)
 
     :ok
