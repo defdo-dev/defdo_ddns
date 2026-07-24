@@ -106,6 +106,24 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec list_dns_records(String.t(), list()) :: list()
   def list_dns_records(zone_id, params \\ []) do
+    case fetch_dns_records(zone_id, params) do
+      {:ok, records} -> records
+      {:error, _reason} -> []
+    end
+  end
+
+  @doc """
+  Same listing as `list_dns_records/2`, but reports failure instead of hiding it.
+
+  `list_dns_records/2` answers `[]` for both "this zone has no records" and "the
+  call failed", which is fine for the monitor — it simply has nothing to sync —
+  and dangerous for anything that reasons about absence. Reconciliation reads an
+  empty list as "every declared record is missing" and an edge error as "nothing
+  is declared upstream", so a single transient Cloudflare 521 would otherwise
+  manufacture a zone's worth of false conclusions.
+  """
+  @spec fetch_dns_records(String.t(), list()) :: {:ok, list()} | {:error, term()}
+  def fetch_dns_records(zone_id, params \\ []) do
     Req.get("#{@zone_endpoint}/#{zone_id}/dns_records",
       headers: cf_auth_headers(),
       params: params
@@ -113,15 +131,15 @@ defmodule Defdo.Cloudflare.DDNS do
     |> decode_envelope("list_dns_records")
     |> case do
       {:ok, %{"result" => result}} when is_list(result) ->
-        result
+        {:ok, result}
 
       {:ok, body} ->
         log_api_error("list_dns_records", body)
-        []
+        {:error, :unexpected_response}
 
       {:error, message} ->
         Logger.error(message)
-        []
+        {:error, :listing_failed}
     end
   end
 
