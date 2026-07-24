@@ -19,12 +19,16 @@ defmodule Defdo.DDNS.Adoption do
   entry is keyed by a derived, stable id rather than something regenerated per
   run, and why `refresh/1` only ever *inserts* entries it has never seen.
 
-  Accepting records the decision. Promoting the record into desired state is
-  slice 03's concern — see `guides/slices/ddns-record-adoption/`.
+  Accepting records the decision *and* promotes the record into
+  `Defdo.DDNS.DesiredStateStore`, atomically — see `accept/2`. Adoption therefore
+  requires the desired-state file to be configured: without somewhere durable to
+  promote into, "accepted" would be a label with no effect on what DDNS
+  converges.
   """
 
   require Logger
 
+  alias Defdo.DDNS.DesiredStateStore
   alias Defdo.DDNS.Reconcile.Inventory
 
   @states ~w(pending accepted rejected)
@@ -77,12 +81,85 @@ defmodule Defdo.DDNS.Adoption do
   def get(id) when is_binary(id), do: Map.get(load(), id)
 
   @doc """
-  Accept a pending record. Deciding twice is a no-op returning the existing
-  entry, not an error — the operator's intent is already recorded, and failing
-  here would only make an idempotent workflow look broken.
+  Accept a pending record: record the decision, then promote it into desired
+  state so the monitor starts converging it.
+
+  Both halves or neither. If the desired-state write fails the decision rolls
+  back to pending, because "accepted but absent from desired state" is
+  indistinguishable from a rejection at the next sync — the record would be
+  silently dropped while the log said it was adopted.
+
+  Deciding twice is a no-op returning the existing entry, not an error: the
+  intent is already recorded, and failing would only make an idempotent workflow
+  look broken. Promotion is idempotent too — a record already declared is left
+  alone rather than duplicated.
   """
   @spec accept(String.t(), map()) :: {:ok, entry()} | {:error, term()}
-  def accept(id, meta \\ %{}), do: decide(id, "accepted", meta)
+  def accept(id, meta \\ %{}) do
+    with {:ok, entry} <- decide(id, "accepted", meta) do
+      case promote(entry) do
+        :ok ->
+          {:ok, entry}
+
+        {:error, reason} ->
+          rollback(id, entry)
+          {:error, {:promotion_failed, reason}}
+      end
+    end
+  end
+
+  # --- promotion --------------------------------------------------------------
+
+  # Already-decided entries reaching accept/2 a second time must not re-promote
+  # and must not fail; the record is already declared.
+  defp promote(%{"state" => "accepted", "record" => record}) do
+    case DesiredStateStore.update(&declare(&1, record)) do
+      {:ok, _doc} -> :ok
+      {:error, :disabled} -> {:error, :desired_state_disabled}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp promote(_entry), do: :ok
+
+  defp declare(doc, record) do
+    entry = %{
+      "domain" => record["domain"] || "",
+      "name" => record["name"],
+      "target" => record["content"] || "@",
+      "proxied" => record["proxied"] || false,
+      "ttl" => record["ttl"] || 1
+    }
+
+    update_in(doc, ["cloudflare", "cname_records"], fn declared ->
+      declared = declared || []
+
+      if Enum.any?(declared, &same_record?(&1, entry)) do
+        declared
+      else
+        declared ++ [entry]
+      end
+    end)
+  end
+
+  defp same_record?(a, b) do
+    String.downcase(to_string(a["name"])) == String.downcase(to_string(b["name"])) and
+      to_string(a["domain"]) == to_string(b["domain"])
+  end
+
+  defp rollback(id, entry) do
+    entries = load()
+
+    restored =
+      Map.merge(entry, %{
+        "state" => "pending",
+        "decided_at" => nil,
+        "decided_by" => nil,
+        "note" => nil
+      })
+
+    save(Map.put(entries, id, restored))
+  end
 
   @doc "Reject a pending record. Durable: it never returns to pending."
   @spec reject(String.t(), map()) :: {:ok, entry()} | {:error, term()}

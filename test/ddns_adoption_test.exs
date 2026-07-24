@@ -11,6 +11,7 @@ defmodule Defdo.DDNS.AdoptionTest do
   use ExUnit.Case, async: false
 
   alias Defdo.DDNS.Adoption
+  alias Defdo.DDNS.DesiredStateStore
 
   @zone_id "zone-abc"
 
@@ -18,11 +19,18 @@ defmodule Defdo.DDNS.AdoptionTest do
     previous_cloudflare = Application.get_env(:defdo_ddns, Cloudflare)
     previous_store = Application.get_env(:defdo_ddns, Defdo.DDNS.RecordStore)
     previous_adoption = Application.get_env(:defdo_ddns, Adoption)
+    previous_desired = Application.get_env(:defdo_ddns, DesiredStateStore)
 
-    tmp = Path.join(System.tmp_dir!(), "ddns-adoption-#{System.unique_integer([:positive])}.json")
+    seed = System.unique_integer([:positive])
+    tmp = Path.join(System.tmp_dir!(), "ddns-adoption-#{seed}.json")
+    desired = Path.join(System.tmp_dir!(), "ddns-desired-#{seed}.json")
 
     Req.default_options(plug: {Req.Test, __MODULE__})
     Application.put_env(:defdo_ddns, Adoption, path: tmp)
+
+    # Accepting promotes into desired state, so the store has to exist for a
+    # decision to mean anything.
+    Application.put_env(:defdo_ddns, DesiredStateStore, path: desired)
 
     Application.put_env(:defdo_ddns, Cloudflare,
       auth_token: "test-token",
@@ -40,13 +48,17 @@ defmodule Defdo.DDNS.AdoptionTest do
     on_exit(fn ->
       Req.default_options([])
       File.rm(tmp)
+      File.rm(desired)
       restore(Cloudflare, previous_cloudflare)
       restore(Defdo.DDNS.RecordStore, previous_store)
       restore(Adoption, previous_adoption)
+      restore(DesiredStateStore, previous_desired)
       Defdo.DDNS.RecordStore.reload()
     end)
 
-    {:ok, path: tmp}
+    assert {:ok, _} = DesiredStateStore.seed()
+
+    {:ok, path: tmp, desired: desired}
   end
 
   defp restore(key, nil), do: Application.delete_env(:defdo_ddns, key)
@@ -210,6 +222,57 @@ defmodule Defdo.DDNS.AdoptionTest do
 
       refute File.exists?(path <> ".tmp")
       assert File.exists?(path)
+    end
+  end
+
+  describe "promotion into desired state" do
+    setup do
+      stub_drift()
+      assert {:ok, _} = Adoption.refresh("defdo.ninja")
+      :ok
+    end
+
+    test "accepting declares the record so the monitor converges it" do
+      assert {:ok, _} = Adoption.accept("cname:foss.defdo.ninja")
+
+      assert {:ok, doc} = DesiredStateStore.load()
+      names = Enum.map(doc["cloudflare"]["cname_records"], & &1["name"])
+      assert "foss.defdo.ninja" in names
+    end
+
+    test "accepting twice does not declare it twice" do
+      assert {:ok, _} = Adoption.accept("cname:foss.defdo.ninja")
+      assert {:ok, _} = Adoption.accept("cname:foss.defdo.ninja")
+
+      assert {:ok, doc} = DesiredStateStore.load()
+
+      declared =
+        Enum.filter(doc["cloudflare"]["cname_records"], &(&1["name"] == "foss.defdo.ninja"))
+
+      assert length(declared) == 1
+    end
+
+    test "rejecting declares nothing" do
+      assert {:ok, _} = Adoption.reject("cname:foss.defdo.ninja")
+
+      assert {:ok, doc} = DesiredStateStore.load()
+      names = Enum.map(doc["cloudflare"]["cname_records"], & &1["name"])
+      refute "foss.defdo.ninja" in names
+    end
+
+    test "a failed promotion rolls the decision back to pending", %{desired: desired} do
+      # Make the desired-state write impossible: the path is a directory.
+      File.rm!(desired)
+      File.mkdir_p!(desired)
+
+      assert {:error, {:promotion_failed, _}} = Adoption.accept("cname:foss.defdo.ninja")
+
+      # "accepted but not declared" is indistinguishable from a rejection at the
+      # next sync, so the entry must be back where an operator can act on it.
+      assert [%{"state" => "pending"}] =
+               Adoption.list(:pending) |> Enum.filter(&(&1["id"] == "cname:foss.defdo.ninja"))
+
+      assert Adoption.list(:accepted) == []
     end
   end
 end
