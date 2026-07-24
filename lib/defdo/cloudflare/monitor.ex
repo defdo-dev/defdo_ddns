@@ -58,7 +58,25 @@ defmodule Defdo.Cloudflare.Monitor do
     Logger.info("Executing checkup...")
 
     get_all_cloudflare_config_domains()
-    |> Enum.map(&process/1)
+    |> Enum.map(&safe_process/1)
+  rescue
+    error ->
+      # Second line of defence. A checkup must never take the monitor down: the
+      # supervisor would restart it straight into the same failing call and, after
+      # the restart intensity is exhausted, shut the whole application down. A
+      # failed checkup is logged and retried on the next tick instead.
+      message = "Error - checkup aborted: #{Exception.message(error)}"
+      Logger.error(message)
+      [message]
+  end
+
+  defp safe_process(domain) do
+    process(domain)
+  rescue
+    error ->
+      message = "Error - checkup failed for domain=#{domain}: #{Exception.message(error)}"
+      Logger.error(message)
+      [message]
   end
 
   defp process(domain) do

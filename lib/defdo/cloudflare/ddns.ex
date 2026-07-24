@@ -77,20 +77,19 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_id(bitstring) :: String.t() | nil
   def get_zone_id(domain) when is_bitstring(domain) do
-    body_response =
-      Req.get!(
-        @zone_endpoint,
-        headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
-        params: [name: domain]
-      ).body
+    Req.get(@zone_endpoint, headers: cf_auth_headers(), params: [name: domain])
+    |> decode_envelope("get_zone_id")
+    |> case do
+      {:ok, %{"result" => [zone | _]}} ->
+        zone["id"]
 
-    if Map.has_key?(body_response, "result") && not is_nil(body_response["result"]) do
-      [zone | _] = body_response["result"]
-      zone["id"]
-    else
-      errors = body_response["errors"]
-      Logger.error("Cloudflare API error: #{inspect(errors)}")
-      nil
+      {:ok, body} ->
+        log_api_error("get_zone_id", body)
+        nil
+
+      {:error, message} ->
+        Logger.error(message)
+        nil
     end
   end
 
@@ -107,19 +106,22 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec list_dns_records(String.t(), list()) :: list()
   def list_dns_records(zone_id, params \\ []) do
-    body_response =
-      Req.get!(
-        "#{@zone_endpoint}/#{zone_id}/dns_records",
-        headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
-        params: params
-      ).body
+    Req.get("#{@zone_endpoint}/#{zone_id}/dns_records",
+      headers: cf_auth_headers(),
+      params: params
+    )
+    |> decode_envelope("list_dns_records")
+    |> case do
+      {:ok, %{"result" => result}} when is_list(result) ->
+        result
 
-    if Map.has_key?(body_response, "result") && not is_nil(body_response["result"]) do
-      body_response["result"]
-    else
-      errors = body_response["errors"]
-      Logger.error("Cloudflare API error: #{inspect(errors)}")
-      []
+      {:ok, body} ->
+        log_api_error("list_dns_records", body)
+        []
+
+      {:error, message} ->
+        Logger.error(message)
+        []
     end
   end
 
@@ -169,21 +171,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec apply_update(String.t(), {String.t(), String.t()}) :: tuple()
   def apply_update(zone_id, {record_id, body}) when is_bitstring(body) do
-    body_response =
-      Req.put!(
-        "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
-        headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
-        body: body
-      ).body
-
-    if body_response["success"] == true and Map.has_key?(body_response, "result") and
-         not is_nil(body_response["result"]) do
-      {true, body_response["result"]}
-    else
-      errors = body_response["errors"]
-      Logger.error("Cloudflare API error: #{inspect(errors)}")
-      {body_response["success"] == true, nil}
-    end
+    Req.put("#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
+      headers: cf_auth_headers(),
+      body: body
+    )
+    |> decode_envelope("apply_update")
+    |> handle_write_result("apply_update")
   end
 
   @doc """
@@ -199,22 +192,71 @@ defmodule Defdo.Cloudflare.DDNS do
 
     record_with_comment = Map.put(record_data, "comment", comment)
 
-    body_response =
-      Req.post!(
-        "#{@zone_endpoint}/#{zone_id}/dns_records",
-        headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"],
-        body: Jason.encode!(record_with_comment)
-      ).body
+    Req.post("#{@zone_endpoint}/#{zone_id}/dns_records",
+      headers: cf_auth_headers(),
+      body: Jason.encode!(record_with_comment)
+    )
+    |> decode_envelope("create_dns_record")
+    |> handle_write_result("create_dns_record")
+  end
 
-    if body_response["success"] == true and Map.has_key?(body_response, "result") and
-         not is_nil(body_response["result"]) do
-      {true, body_response["result"]}
-    else
-      errors = body_response["errors"]
-      Logger.error("Cloudflare API error: #{inspect(errors)}")
-      {body_response["success"] == true, nil}
+  # --- Cloudflare response handling ------------------------------------------
+  #
+  # Cloudflare edge failures (520-527) do NOT return the documented JSON
+  # envelope — they return a plain-text or HTML page, e.g. "error code: 521".
+  # Every response must therefore be proven to be a map before any Map/Access
+  # call touches it: letting one raise killed the monitor, and because the
+  # supervisor restarted it straight back into the same failing call, the whole
+  # application shut down and stayed down.
+
+  defp cf_auth_headers do
+    [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]
+  end
+
+  defp decode_envelope({:ok, %Req.Response{status: status, body: body}}, op) do
+    cond do
+      status in 200..299 and is_map(body) ->
+        {:ok, body}
+
+      status in 200..299 ->
+        {:error, "Cloudflare #{op}: unexpected non-JSON body (#{body_snippet(body)})"}
+
+      true ->
+        {:error, "Cloudflare #{op}: HTTP #{status} (#{body_snippet(body)})"}
     end
   end
+
+  defp decode_envelope({:error, reason}, op) do
+    {:error, "Cloudflare #{op}: transport error #{inspect(reason)}"}
+  end
+
+  defp handle_write_result({:ok, %{"success" => true, "result" => result}}, _op)
+       when not is_nil(result) do
+    {true, result}
+  end
+
+  defp handle_write_result({:ok, body}, op) do
+    log_api_error(op, body)
+    {body["success"] == true, nil}
+  end
+
+  defp handle_write_result({:error, message}, _op) do
+    Logger.error(message)
+    {false, nil}
+  end
+
+  defp log_api_error(op, body) do
+    Logger.error("Cloudflare #{op}: API error #{inspect(Map.get(body, "errors", []))}")
+  end
+
+  # Edge error pages carry no record data or credentials, so a short, collapsed
+  # snippet is safe and is the only way to tell 521 from 522 in the logs.
+  defp body_snippet(body) when is_binary(body) do
+    body |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, 80)
+  end
+
+  defp body_snippet(body) when is_map(body), do: inspect(Map.get(body, "errors", []))
+  defp body_snippet(_), do: "no body"
 
   @doc """
   Check the records which must be updated
