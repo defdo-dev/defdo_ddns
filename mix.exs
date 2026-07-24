@@ -5,7 +5,7 @@ defmodule Defdo.DDNS.MixProject do
   def project do
     [
       app: :defdo_ddns,
-      version: "0.3.3",
+      version: "0.3.4",
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       description: description(),

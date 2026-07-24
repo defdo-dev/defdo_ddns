@@ -1,3 +1,20 @@
+# 0.3.4
+
+## 🐞 Fixes
+
+- **Cloudflare edge errors no longer shut the application down.** Cloudflare
+  returns 520-527 failures as a plain-text or HTML page rather than the
+  documented JSON envelope. The client indexed into that body directly, so a
+  single transient `error code: 521` raised, killed the monitor, and — after the
+  supervisor restarted it into the same failing call and exhausted its restart
+  intensity — terminated the whole application, which then stayed down silently.
+  Zone lookups, record listing, creation and updates now validate the response
+  before reading it and degrade to their documented return value with a log line.
+- `get_zone_id/1` no longer raises when Cloudflare returns an empty result list
+  for an unknown domain.
+- The monitor now rescues per-domain and per-checkup, so an unexpected failure is
+  logged and retried on the next tick instead of terminating the process.
+
 # Unreleased
 
 ## ✨ New Features
