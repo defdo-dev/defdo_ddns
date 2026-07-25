@@ -375,4 +375,104 @@ defmodule Defdo.DDNS.APITest do
   defp random_domain do
     "zone-#{System.unique_integer([:positive])}.example.test"
   end
+
+  describe "adoption endpoints" do
+    setup do
+      previous_adoption = Application.get_env(:defdo_ddns, Defdo.DDNS.Adoption)
+      previous_desired = Application.get_env(:defdo_ddns, Defdo.DDNS.DesiredStateStore)
+
+      seed = System.unique_integer([:positive])
+      adoption = Path.join(System.tmp_dir!(), "api-adoption-#{seed}.json")
+      desired = Path.join(System.tmp_dir!(), "api-desired-#{seed}.json")
+
+      Application.put_env(:defdo_ddns, Defdo.DDNS.API, token: "secret")
+      Application.put_env(:defdo_ddns, Defdo.DDNS.Adoption, path: adoption)
+      Application.put_env(:defdo_ddns, Defdo.DDNS.DesiredStateStore, path: desired)
+
+      # A pending entry to decide on, written straight to the file — the API is
+      # the subject here, not discovery.
+      entry = %{
+        "cname:foss.defdo.ninja" => %{
+          "id" => "cname:foss.defdo.ninja",
+          "record" => %{
+            "type" => "CNAME",
+            "name" => "foss.defdo.ninja",
+            "content" => "defdo.ninja",
+            "proxied" => true,
+            "ttl" => 1
+          },
+          "state" => "pending",
+          "first_seen" => "2026-07-24T00:00:00Z",
+          "decided_at" => nil,
+          "decided_by" => nil,
+          "note" => nil
+        }
+      }
+
+      File.write!(adoption, Jason.encode!(%{"entries" => entry}))
+
+      File.write!(
+        desired,
+        Jason.encode!(%{"version" => 1, "cloudflare" => %{"cname_records" => []}})
+      )
+
+      on_exit(fn ->
+        File.rm(adoption)
+        File.rm(desired)
+        restore(Defdo.DDNS.Adoption, previous_adoption)
+        restore(Defdo.DDNS.DesiredStateStore, previous_desired)
+      end)
+
+      :ok
+    end
+
+    defp restore(key, nil), do: Application.delete_env(:defdo_ddns, key)
+    defp restore(key, value), do: Application.put_env(:defdo_ddns, key, value)
+
+    defp call(method, path, body \\ nil) do
+      conn = conn(method, path, body && Jason.encode!(body))
+      conn = if body, do: put_req_header(conn, "content-type", "application/json"), else: conn
+
+      conn
+      |> put_req_header("authorization", "Bearer secret")
+      |> Router.call([])
+    end
+
+    test "GET /v1/adoption lists pending by default" do
+      conn = call(:get, "/v1/adoption")
+      assert conn.status == 200
+
+      assert %{"state" => "pending", "entries" => [%{"id" => "cname:foss.defdo.ninja"}]} =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "GET /v1/adoption is unauthorized without a token" do
+      conn = conn(:get, "/v1/adoption") |> Router.call([])
+      assert conn.status == 401
+    end
+
+    test "POST accept records and promotes" do
+      conn = call(:post, "/v1/adoption/cname:foss.defdo.ninja/accept", %{"by" => "api"})
+      assert conn.status == 200
+
+      assert %{"entry" => %{"state" => "accepted", "decided_by" => "api"}} =
+               Jason.decode!(conn.resp_body)
+
+      assert {:ok, doc} = Defdo.DDNS.DesiredStateStore.load()
+      assert Enum.any?(doc["cloudflare"]["cname_records"], &(&1["name"] == "foss.defdo.ninja"))
+    end
+
+    test "POST reject records the decision" do
+      conn = call(:post, "/v1/adoption/cname:foss.defdo.ninja/reject", %{"note" => "not ours"})
+      assert conn.status == 200
+
+      assert %{"entry" => %{"state" => "rejected", "note" => "not ours"}} =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "POST accept on an unknown id is 404" do
+      conn = call(:post, "/v1/adoption/cname:nope.defdo.ninja/accept")
+      assert conn.status == 404
+    end
+  end
 end

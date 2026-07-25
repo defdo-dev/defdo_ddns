@@ -47,8 +47,11 @@ defmodule Defdo.DDNS.AdoptionTest do
 
     on_exit(fn ->
       Req.default_options([])
-      File.rm(tmp)
-      File.rm(desired)
+      # rm_rf, not rm: the failed-promotion test turns `desired` into a directory
+      # to force a write error, and File.rm cannot remove a directory — leaving it
+      # in tmp to collide with a later run's path.
+      File.rm_rf(tmp)
+      File.rm_rf(desired)
       restore(Cloudflare, previous_cloudflare)
       restore(Defdo.DDNS.RecordStore, previous_store)
       restore(Adoption, previous_adoption)
@@ -56,7 +59,12 @@ defmodule Defdo.DDNS.AdoptionTest do
       Defdo.DDNS.RecordStore.reload()
     end)
 
-    assert {:ok, _} = DesiredStateStore.seed()
+    # Start from a clean slate: System.unique_integer restarts each `mix test`,
+    # so a leftover file — or the directory the failed-promotion test creates —
+    # can sit at this run's path. rm_rf clears either; force overwrites. The
+    # refuse-if-exists behaviour is DesiredStateStore's own to test.
+    File.rm_rf(desired)
+    assert {:ok, _} = DesiredStateStore.seed(force: true)
 
     {:ok, path: tmp, desired: desired}
   end

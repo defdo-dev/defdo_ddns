@@ -95,12 +95,14 @@ defmodule Defdo.IntegrationTest do
 
   describe "DNS record processing" do
     test "create_dns_record includes promotional comment" do
-      # Test that the function exists with correct arity
+      # function_exported?/3 answers false for a module not yet loaded, which in
+      # a full-suite run depends on test order; ensure it is loaded first.
+      assert Code.ensure_loaded?(DDNS)
       assert function_exported?(DDNS, :create_dns_record, 2)
     end
 
     test "apply_update processes record updates" do
-      # Test that the function exists
+      assert Code.ensure_loaded?(DDNS)
       assert function_exported?(DDNS, :apply_update, 2)
     end
   end

@@ -3,6 +3,7 @@ defmodule Defdo.DDNS.API.Router do
 
   use Plug.Router
 
+  alias Defdo.DDNS.Adoption
   alias Defdo.DDNS.API.AuthConfig
   alias Defdo.DDNS.API.AuthStore
   alias Defdo.DDNS.API.DNS
@@ -43,8 +44,63 @@ defmodule Defdo.DDNS.API.Router do
     end
   end
 
+  # --- record adoption --------------------------------------------------------
+  #
+  # Read/decide over local state only. None of these touch Cloudflare — that is
+  # the whole point of the adoption model: discovery is read-only, and adopting
+  # promotes into desired state for the monitor to converge, it does not write
+  # DNS from here.
+
+  get "/v1/adoption" do
+    with {:ok, _auth} <- authorize(conn) do
+      state = adoption_state(conn)
+      json(conn, 200, %{status: "ok", state: to_string(state), entries: Adoption.list(state)})
+    else
+      {:error, :unauthorized} -> json(conn, 401, %{status: "error", error: "unauthorized"})
+    end
+  end
+
+  post "/v1/adoption/:id/accept" do
+    decide(conn, id, &Adoption.accept/2)
+  end
+
+  post "/v1/adoption/:id/reject" do
+    decide(conn, id, &Adoption.reject/2)
+  end
+
   match _ do
     json(conn, 404, %{status: "error", error: "not_found"})
+  end
+
+  defp adoption_state(conn) do
+    conn = fetch_query_params(conn)
+
+    case conn.query_params["state"] do
+      s when s in ~w(pending accepted rejected all) -> String.to_existing_atom(s)
+      _ -> :pending
+    end
+  end
+
+  defp decide(conn, id, fun) do
+    with {:ok, _auth} <- authorize(conn) do
+      meta = Map.take(conn.body_params || %{}, ["by", "note"])
+
+      case fun.(id, meta) do
+        {:ok, entry} ->
+          json(conn, 200, %{status: "ok", entry: entry})
+
+        {:error, :not_found} ->
+          json(conn, 404, %{status: "error", error: "not_found"})
+
+        {:error, {:promotion_failed, reason}} ->
+          json(conn, 409, %{status: "error", error: "promotion_failed", details: inspect(reason)})
+
+        {:error, reason} ->
+          json(conn, 500, %{status: "error", error: "internal_error", details: inspect(reason)})
+      end
+    else
+      {:error, :unauthorized} -> json(conn, 401, %{status: "error", error: "unauthorized"})
+    end
   end
 
   defp authorize(conn) do
