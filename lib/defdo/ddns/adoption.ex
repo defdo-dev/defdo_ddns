@@ -178,11 +178,15 @@ defmodule Defdo.DDNS.Adoption do
     "#{type}:#{name}"
   end
 
+  # Under the same volume the record snapshot uses, so a deployment that mounts
+  # it gets persistent adoption decisions without configuring another path.
+  @default_path "/var/lib/defdo_ddns/adoption.json"
+
   @doc "Where the adoption file lives."
-  @spec path() :: String.t() | nil
+  @spec path() :: String.t()
   def path do
     Application.get_env(:defdo_ddns, __MODULE__, [])
-    |> Keyword.get(:path, System.get_env("DDNS_ADOPTION_PATH"))
+    |> Keyword.get(:path, System.get_env("DDNS_ADOPTION_PATH", @default_path))
   end
 
   # --- decisions --------------------------------------------------------------

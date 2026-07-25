@@ -1,3 +1,14 @@
+# 0.4.3
+
+## 🐞 Fixes
+
+- **Adoption persists by default.** With no `DDNS_ADOPTION_PATH` configured, the
+  store silently no-oped: `refresh` reported records added while `list` returned
+  nothing, because writes went nowhere. It now defaults to
+  `/var/lib/defdo_ddns/adoption.json` — the same volume the record snapshot uses
+  — so a deployment that mounts it keeps decisions without configuring another
+  path.
+
 # 0.4.2
 
 ## ✨ New Features
