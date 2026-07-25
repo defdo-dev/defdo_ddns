@@ -1,3 +1,30 @@
+# 0.4.0
+
+## ✨ New Features
+
+- **Record adoption.** DDNS can now see records that exist in Cloudflare but were
+  never declared here, and bring them under management through an explicit
+  decision. The live `defdo.ninja` zone carries 33 such records against the dozen
+  the config declares; until now nothing reported that gap, and nothing could
+  converge it.
+  - `Reconcile.Inventory` classifies a zone's live records as managed, unmanaged
+    or missing. Read-only.
+  - `Adoption` holds undeclared records as `pending` until an operator accepts or
+    rejects them. Discovery is automatic; adoption never is. Rejections are
+    durable, so a refused record never asks to be adopted again.
+  - Accepting promotes the record into desired state atomically — from there the
+    monitor converges it. A failed promotion rolls the decision back rather than
+    marking a record adopted that nothing manages.
+  - Operator surface: `mix defdo.ddns.adoption.{refresh,list,accept,reject}`,
+    plus `GET/POST /v1/adoption[/:id/{accept,reject}]` behind the existing API
+    gate. Targets are redacted in listings.
+- **File-backed desired state.** `DesiredStateStore` moves DNS intent out of
+  environment variables into a canonical file (`DDNS_DESIRED_STATE_PATH`). The
+  file is authoritative once written; env becomes a one-time seed. Disabled
+  unless the path is set, so adoption is opt-in per deployment. Kept distinct
+  from the runtime record snapshot: intent and observation are not the same
+  thing.
+
 # 0.3.4
 
 ## 🐞 Fixes
