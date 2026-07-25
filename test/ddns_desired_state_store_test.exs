@@ -116,11 +116,33 @@ defmodule Defdo.DDNS.DesiredStateStoreTest do
   end
 
   describe "missing file" do
-    test "is a loud error, never an empty document", %{state_path: file} do
+    test "is a loud error when there is nothing to seed from", %{state_path: file} do
       enable(file)
+      # No Cloudflare config in the environment either.
+      Application.put_env(:defdo_ddns, Cloudflare, auth_token: "t")
 
       assert {:error, :missing_desired_state} = DesiredStateStore.load()
       assert %{"state" => "error"} = DesiredStateStore.status()
+    end
+
+    test "seeds lazily from the environment on first read", %{state_path: file} do
+      enable(file)
+      put_env_config()
+      refute File.exists?(file)
+
+      # The release runs no mix task; the first read is what creates the file.
+      assert {:ok, doc} = DesiredStateStore.load()
+      assert File.exists?(file)
+      assert Map.keys(doc["cloudflare"]["domain_mappings"]) == ["defdo.ninja"]
+
+      # And it is authoritative from then on — a later env change is ignored.
+      Application.put_env(:defdo_ddns, Cloudflare,
+        auth_token: "t",
+        domain_mappings: %{"x.test" => []}
+      )
+
+      assert {:ok, doc2} = DesiredStateStore.load()
+      assert Map.keys(doc2["cloudflare"]["domain_mappings"]) == ["defdo.ninja"]
     end
 
     test "a malformed file is rejected rather than treated as empty", %{

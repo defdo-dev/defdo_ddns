@@ -1,3 +1,16 @@
+# 0.4.1
+
+## 🐞 Fixes
+
+- **Desired state seeds itself on first read.** With `DDNS_DESIRED_STATE_PATH`
+  set but no file yet, `DesiredStateStore.load/0` now writes the file from the
+  environment config on the first read instead of returning
+  `:missing_desired_state`. The release image runs no `mix`, so there was no way
+  for an operator to create the file, and `accept` (over the API) would have
+  failed against a store that could never be initialized. Still fails loudly when
+  there is genuinely nothing to seed from, and still never overwrites an existing
+  file.
+
 # 0.4.0
 
 ## ✨ New Features

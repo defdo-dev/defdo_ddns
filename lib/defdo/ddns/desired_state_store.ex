@@ -51,9 +51,13 @@ defmodule Defdo.DDNS.DesiredStateStore do
 
   * `{:ok, doc}` — the file exists and is canonical.
   * `{:error, :disabled}` — no path configured; callers use the env accessors.
-  * `{:error, :missing_desired_state}` — a path is configured but there is no
-    file and nothing to seed from. Loud on purpose: booting empty would silently
-    unmanage every record in the estate.
+  * `{:error, :missing_desired_state}` — a path is configured, there is no file,
+    and there is nothing in the environment to seed from. Loud on purpose:
+    treating "no intent anywhere" as an empty document would silently unmanage
+    every record in the estate. When the file is absent but the environment does
+    carry config, the file is seeded from it on this first read (see
+    `seed_on_missing/1`) — the release runs no `mix`, so this is what lets a
+    fresh deployment produce the file without an operator step.
   """
   @spec load() :: {:ok, DesiredState.t()} | {:error, term()}
   def load do
@@ -67,13 +71,55 @@ defmodule Defdo.DDNS.DesiredStateStore do
             DesiredState.decode(binary)
 
           {:error, :enoent} ->
-            {:error, :missing_desired_state}
+            # Lazy seed on first read. The slice wanted the file written from env
+            # on a first boot with a seed present; doing it here rather than in a
+            # boot process keeps the "no supervision entry" property — a seed
+            # failure returns an error to the caller instead of failing the
+            # release to start. Only reachable when the file is absent, so it
+            # never overwrites a file someone edited.
+            seed_on_missing(file)
 
           {:error, reason} ->
             {:error, {:desired_state_unreadable, reason}}
         end
     end
   end
+
+  defp seed_on_missing(file) do
+    if env_seedable?() do
+      case seed() do
+        {:ok, doc} ->
+          {:ok, doc}
+
+        # A racing writer created the file between the read and the seed; read it.
+        {:error, :already_seeded} ->
+          reread(file)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :missing_desired_state}
+    end
+  end
+
+  defp reread(file) do
+    case File.read(file) do
+      {:ok, binary} -> DesiredState.decode(binary)
+      {:error, reason} -> {:error, {:desired_state_unreadable, reason}}
+    end
+  end
+
+  defp env_seedable? do
+    cf = env_config()
+
+    map_size(Map.get(cf, "domain_mappings", %{}) |> to_map()) > 0 or
+      map_size(Map.get(cf, "aaaa_domain_mappings", %{}) |> to_map()) > 0 or
+      length(List.wrap(Map.get(cf, "cname_records", []))) > 0
+  end
+
+  defp to_map(v) when is_map(v), do: v
+  defp to_map(_), do: %{}
 
   @doc """
   Write the file from the current environment configuration, once.
