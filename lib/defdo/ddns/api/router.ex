@@ -60,6 +60,30 @@ defmodule Defdo.DDNS.API.Router do
     end
   end
 
+  # Discovery has no mix on a release image, so it needs an API entry point too —
+  # otherwise the pending list can never be populated where DDNS actually runs.
+  post "/v1/adoption/refresh" do
+    with {:ok, _auth} <- authorize(conn),
+         domain when is_binary(domain) <- conn.body_params["domain"],
+         {:ok, result} <- Adoption.refresh(domain) do
+      json(conn, 200, %{status: "ok", result: result, entries: Adoption.list(:pending)})
+    else
+      {:error, :unauthorized} ->
+        json(conn, 401, %{status: "error", error: "unauthorized"})
+
+      nil ->
+        json(conn, 422, %{
+          status: "error",
+          error: "validation_failed",
+          details: %{domain: "required"}
+        })
+
+      {:error, reason} ->
+        # A Cloudflare read failure, not our fault and nothing written.
+        json(conn, 502, %{status: "error", error: "discovery_failed", details: inspect(reason)})
+    end
+  end
+
   post "/v1/adoption/:id/accept" do
     decide(conn, id, &Adoption.accept/2)
   end

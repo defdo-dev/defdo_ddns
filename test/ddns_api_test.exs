@@ -470,6 +470,20 @@ defmodule Defdo.DDNS.APITest do
                Jason.decode!(conn.resp_body)
     end
 
+    test "POST refresh requires a domain" do
+      conn = call(:post, "/v1/adoption/refresh", %{})
+      assert conn.status == 422
+    end
+
+    test "POST refresh without auth is unauthorized" do
+      conn =
+        conn(:post, "/v1/adoption/refresh", Jason.encode!(%{"domain" => "defdo.ninja"}))
+        |> put_req_header("content-type", "application/json")
+        |> Router.call([])
+
+      assert conn.status == 401
+    end
+
     test "POST accept on an unknown id is 404" do
       conn = call(:post, "/v1/adoption/cname:nope.defdo.ninja/accept")
       assert conn.status == 404

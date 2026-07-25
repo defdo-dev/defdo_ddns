@@ -1,3 +1,13 @@
+# 0.4.2
+
+## ✨ New Features
+
+- **Adoption discovery over the API.** `POST /v1/adoption/refresh` (body
+  `{"domain": "..."}`) runs an inventory and populates the pending list. The
+  release image has no `mix`, so without this the pending list could never be
+  filled where DDNS actually runs — list/accept/reject had nothing to act on.
+  Read-only against Cloudflare, same auth as the other adoption endpoints.
+
 # 0.4.1
 
 ## 🐞 Fixes
