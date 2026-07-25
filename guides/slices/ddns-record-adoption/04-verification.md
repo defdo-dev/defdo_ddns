@@ -40,9 +40,26 @@ mix defdo.ddns.adoption.refresh defdo.ninja
 mix defdo.ddns.adoption.list --state pending
 ```
 
-Expected: roughly 17 pending entries for `defdo.ninja` (the hand-created records:
-`foss`, `tailwind-hub`, `travel`, `wa`, `git`, `vault`, `woodpecker`, `hub`,
-`notifly` and the rest), zero accepted, zero rejected, and **no change in
+### Measured 2026-07-24 (0.3.4 + adoption set)
+
+Run against the live `defdo.ninja` zone with `DDNS_ENABLE_MONITOR=false` — the
+monitor writes, and this gate must prove that nothing here does.
+
+| Check | Result |
+| --- | --- |
+| Zone records before / after | **55 / 55** — zero writes |
+| First refresh | **33 new** |
+| Second and third refresh | **0 new, 33 already known** — idempotent |
+| Reject one, then refresh | stays rejected; **32 pending, 1 rejected** |
+
+The authoring estimate of "roughly 17" was wrong: it counted only the
+application hosts. The real unmanaged set is 33, because the zone also carries
+infrastructure records nobody thought of as DDNS's business — an ACME validation
+CNAME, `k3s2-etcdb`, `consul`, `db-ninja-nas-prod`, a Mailgun delegation. Most of
+those should be *rejected*, not adopted, which is the argument for the decision
+step existing at all: a set this size is not something to absorb wholesale.
+
+Expect zero accepted and zero rejected on a first run, and **no change in
 Cloudflare** — verify the zone record count is identical before and after.
 
 ## Redaction Gate
