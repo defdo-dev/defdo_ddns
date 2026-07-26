@@ -164,6 +164,69 @@ defmodule Defdo.DDNS.DesiredStateStore do
     end
   end
 
+  @doc """
+  Declare a CNAME record as managed. Idempotent.
+
+  Two paths reach this: adoption promoting a record an operator accepted, and
+  the provisioning API declaring a record this deployment just created. They
+  must write the entry identically — if the shapes diverged, the same record
+  could be declared twice, or fail to match itself on the next reconcile and
+  reappear as drift. Sharing one function is what prevents that.
+
+  Returns `{:error, :disabled}` when no desired-state file is configured, which
+  callers are expected to treat as "nothing to record", not as a failure.
+  """
+  @spec declare(map()) :: {:ok, DesiredState.t()} | {:error, term()}
+  def declare(record) when is_map(record) do
+    entry = entry_for(record)
+
+    case load() do
+      {:ok, doc} ->
+        persist(put_cname(doc, entry))
+
+      # `load/0` refuses to treat a missing file as an empty document, and it is
+      # right to: for a *read*, "no intent anywhere" would silently unmanage the
+      # whole estate. A declaration is the opposite operation — it adds a fact
+      # rather than inferring the absence of one — so starting from an empty
+      # document is correct here, and it is the only way the first record a
+      # fresh deployment provisions actually gets recorded.
+      {:error, :missing_desired_state} ->
+        with {:ok, empty} <- DesiredState.new(%{}) do
+          persist(put_cname(empty, entry))
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp entry_for(record) do
+    %{
+      "domain" => record["domain"] || "",
+      "name" => record["name"],
+      "target" => record["content"] || "@",
+      "proxied" => record["proxied"] || false,
+      "ttl" => record["ttl"] || 1
+    }
+  end
+
+  defp put_cname(doc, entry) do
+    update_in(doc, ["cloudflare", "cname_records"], fn declared ->
+      declared = declared || []
+
+      if Enum.any?(declared, &same_record?(&1, entry)) do
+        declared
+      else
+        declared ++ [entry]
+      end
+    end)
+  end
+
+  defp same_record?(a, b) do
+    String.downcase(to_string(a["name"])) == String.downcase(to_string(b["name"])) and
+      to_string(a["domain"]) == to_string(b["domain"])
+  end
+
   @doc "Counts and metadata only — never hostnames, targets or flag values."
   @spec status() :: map()
   def status do

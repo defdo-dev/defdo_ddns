@@ -1,3 +1,43 @@
+# 0.5.0
+
+## ✨ Features
+
+- **A provisioned record is managed from birth.** `POST /v1/dns/upsert` wrote to
+  Cloudflare and stopped there, so the monitor never knew the record existed.
+  The next inventory reported it as unmanaged and an operator had to *adopt* a
+  record the platform itself had just created — the API was manufacturing
+  exactly the drift adoption exists to clean up, once per provisioned tenant.
+  Upsert now declares the record in desired state in the same call, and the
+  response carries `declared: true|false` so a caller can tell.
+
+  Declaring is never fatal. The DNS record already exists by that point, so a
+  failure to record it is logged and reported, not turned into a failed
+  response for an operation that succeeded. A deployment with no desired-state
+  file configured is a supported configuration and simply reports
+  `declared: false`.
+
+## 🧹 Internal
+
+- `Defdo.DDNS.DesiredStateStore.declare/1` is now the single definition of what
+  declaring a record means. Adoption's promotion path used to carry a private
+  copy of the entry shape; two copies would eventually disagree about what
+  "already declared" means, and the same record could be stored twice or fail to
+  match itself on the next reconcile.
+- `declare/1` starts from an empty document when the file is absent. `load/0`
+  deliberately refuses to do this — for a read, treating "no file" as "no
+  intent" would silently unmanage the whole estate — but a declaration adds a
+  fact rather than inferring the absence of one, and without it the first record
+  a fresh deployment provisions would be dropped in silence.
+
+## 🔒 Security
+
+- Cleared all 28 advisories `mix hex.audit` reported. Most were removed rather
+  than upgraded: `tesla` and a second `mint` came from `restlax` and
+  `cloudflare`, neither declared in `mix.exs`; `bypass` pulled
+  `plug_cowboy → cowboy → cowlib` — a whole second HTTP server — for tests that
+  never used it. `req` was pinned `~> 0.5.0`, which locked out every fix, and
+  now tracks `~> 0.6`.
+
 # 0.4.3
 
 ## 🐞 Fixes
