@@ -1,0 +1,247 @@
+---
+# Harbor multi-arch image pipeline for defdo_ddns.
+#
+# Replaces an Earthly build on GitHub Actions that produced both architectures
+# in a single pass under QEMU. That is the one approach this ecosystem rules
+# out: the BEAM JIT segfaults under QEMU user-mode emulation on aarch64, so a
+# cross-built arm64 image can die mid-compile. Each architecture is now built on
+# its own native BuildKit daemon and the two are joined with manifest-tool.
+#
+# It also moves the image from Docker Hub (paridin/defdo_ddns) to Harbor, where
+# the rest of the ecosystem lives — which reuses the docker_username /
+# docker_password secrets instead of needing a second set. THE NAS MUST BE GIVEN
+# HARBOR CREDENTIALS before it can pull the new image; the running container is
+# unaffected until then.
+#
+# Trigger: tag push (build) or manual (secret preflight ONLY — run manual BEFORE
+# tagging to discover missing secrets without spending a tag).
+#
+# Required secrets: docker_username, docker_password, hex_org_name,
+# hex_org_token, buildkit_host_amd64, buildkit_host_arm64.
+# Optional: discord_webhook.
+
+when:
+  - event: [tag, manual]
+
+labels:
+  platform: linux/amd64
+
+steps:
+  - name: preflight-secrets
+    image: alpine:3
+    environment:
+      HEX_ORG_NAME:
+        from_secret: hex_org_name
+      HEX_ORG_TOKEN:
+        from_secret: hex_org_token
+      DOCKER_USERNAME:
+        from_secret: docker_username
+      DOCKER_PASSWORD:
+        from_secret: docker_password
+      BUILDKIT_HOST_AMD64:
+        from_secret: buildkit_host_amd64
+      BUILDKIT_HOST_ARM64:
+        from_secret: buildkit_host_arm64
+    commands:
+      - |
+        set -eu
+        missing=""
+        for var in HEX_ORG_NAME HEX_ORG_TOKEN \
+                   DOCKER_USERNAME DOCKER_PASSWORD \
+                   BUILDKIT_HOST_AMD64 BUILDKIT_HOST_ARM64; do
+          eval "val=\$${$$var:-}"
+          if [ -z "$$val" ]; then
+            missing="$$missing $$var"
+          fi
+        done
+        if [ -n "$$missing" ]; then
+          echo "Missing required Woodpecker secrets for this repo:"
+          for var in $$missing; do echo "  - $$var"; done
+          echo ""
+          echo "Assign them to defdo_ddns in Woodpecker repo settings before tagging."
+          echo "DISCORD_WEBHOOK is optional (notify step skips when empty)."
+          exit 1
+        fi
+        echo "All required secrets present."
+
+  - name: prepare
+    image: alpine:3
+    when:
+      - event: tag
+    depends_on:
+      - preflight-secrets
+    environment:
+      HEX_ORG_NAME:
+        from_secret: hex_org_name
+    commands:
+      - |
+        set -eu
+        REGISTRY_HOST="hub.defdo.ninja"
+        BASE_PATH="$${REGISTRY_HOST}/defdo"
+        otp_app=$$(grep -Eo 'app: :[a-z_]+' mix.exs | grep -Eo ':[a-z_]+' | cut -c 2-)
+        RETRY="$${CI_PIPELINE_RETRY:-0}"
+        {
+          echo "REGISTRY_HOST=$${REGISTRY_HOST}"
+          echo "IMAGE_REPO=$${BASE_PATH}/$${otp_app}"
+          echo "HEX_ORG_NAME=$${HEX_ORG_NAME}"
+          echo "VERSION=$${CI_COMMIT_TAG}"
+          echo "TEMP_BASE=$${CI_COMMIT_TAG}-tmp-$${CI_PIPELINE_NUMBER}-$${RETRY}"
+        } > .ci-image-env
+        cat .ci-image-env
+
+  - name: build-amd64
+    image: moby/buildkit:v0.16.0
+    when:
+      - event: tag
+    environment:
+      DOCKER_USERNAME:
+        from_secret: docker_username
+      DOCKER_PASSWORD:
+        from_secret: docker_password
+      HEX_ORG_TOKEN:
+        from_secret: hex_org_token
+      BUILDKIT_HOST:
+        from_secret: buildkit_host_amd64
+    commands:
+      - set -eu
+      - . ./.ci-image-env
+      - export DOCKER_CONFIG=/tmp/dockercfg && mkdir -p $$DOCKER_CONFIG
+      - 'printf ''{"auths":{"%s":{"auth":"%s"}}}'' "$$REGISTRY_HOST" "$$(printf "%s:%s" "$$DOCKER_USERNAME" "$$DOCKER_PASSWORD" | base64 -w0)" > $$DOCKER_CONFIG/config.json'
+      - |
+        buildctl --addr "$$BUILDKIT_HOST" build \
+          --frontend dockerfile.v0 \
+          --local context=. \
+          --local dockerfile=. \
+          --opt filename=Dockerfile \
+          --opt build-arg:MIX_ENV=prod \
+          --opt build-arg:HEX_ORG_NAME="$$HEX_ORG_NAME" \
+          --secret id=hex_org_token,env=HEX_ORG_TOKEN \
+          --output type=image,name=$${IMAGE_REPO}:$${TEMP_BASE}-amd64,push=true
+    depends_on:
+      - prepare
+
+  - name: build-arm64
+    image: moby/buildkit:v0.16.0
+    when:
+      - event: tag
+    environment:
+      DOCKER_USERNAME:
+        from_secret: docker_username
+      DOCKER_PASSWORD:
+        from_secret: docker_password
+      HEX_ORG_TOKEN:
+        from_secret: hex_org_token
+      BUILDKIT_HOST:
+        from_secret: buildkit_host_arm64
+    commands:
+      - set -eu
+      - . ./.ci-image-env
+      - export DOCKER_CONFIG=/tmp/dockercfg && mkdir -p $$DOCKER_CONFIG
+      - 'printf ''{"auths":{"%s":{"auth":"%s"}}}'' "$$REGISTRY_HOST" "$$(printf "%s:%s" "$$DOCKER_USERNAME" "$$DOCKER_PASSWORD" | base64 -w0)" > $$DOCKER_CONFIG/config.json'
+      - |
+        buildctl --addr "$$BUILDKIT_HOST" build \
+          --frontend dockerfile.v0 \
+          --local context=. \
+          --local dockerfile=. \
+          --opt filename=Dockerfile \
+          --opt build-arg:MIX_ENV=prod \
+          --opt build-arg:HEX_ORG_NAME="$$HEX_ORG_NAME" \
+          --secret id=hex_org_token,env=HEX_ORG_TOKEN \
+          --output type=image,name=$${IMAGE_REPO}:$${TEMP_BASE}-arm64,push=true
+    depends_on:
+      - prepare
+
+  - name: manifest
+    image: mplatform/manifest-tool:alpine
+    when:
+      - event: tag
+    environment:
+      DOCKER_USERNAME:
+        from_secret: docker_username
+      DOCKER_PASSWORD:
+        from_secret: docker_password
+    commands:
+      - set -eu
+      - . ./.ci-image-env
+      - |
+        if manifest-tool --username "$$DOCKER_USERNAME" --password "$$DOCKER_PASSWORD" --insecure \
+            inspect "$${IMAGE_REPO}:$${VERSION}" > /tmp/existing.txt 2>/dev/null; then
+          if grep -qi "arch: amd64" /tmp/existing.txt && grep -qi "arch: arm64" /tmp/existing.txt; then
+            echo "$${IMAGE_REPO}:$${VERSION} already exists as a multi-arch manifest. Skipping publish."
+            exit 0
+          fi
+          echo "$${IMAGE_REPO}:$${VERSION} exists but is NOT a full multi-arch manifest:"
+          cat /tmp/existing.txt
+          exit 1
+        fi
+      - |
+        manifest-tool --username "$$DOCKER_USERNAME" --password "$$DOCKER_PASSWORD" --insecure \
+          push from-args \
+          --platforms linux/amd64,linux/arm64 \
+          --template "$${IMAGE_REPO}:$${TEMP_BASE}-ARCH" \
+          --target "$${IMAGE_REPO}:$${VERSION}"
+      - manifest-tool --username "$$DOCKER_USERNAME" --password "$$DOCKER_PASSWORD" --insecure inspect "$${IMAGE_REPO}:$${VERSION}"
+    depends_on:
+      - build-amd64
+      - build-arm64
+
+  # NOTE: the cms pipeline has a release-ecr-amd64 step here that promotes the
+  # amd64 image to AWS ECR. It is intentionally OMITTED for ddns:
+  # this app deploys to k3s and pulls from Harbor only, has no ECR repository,
+  # and the shared global aws_* secrets exist — so the step's "self-skip when
+  # absent" guard never fires and it would fail on a missing ECR repo (as it
+  # did on the 0.4.0 tag). If notif ever needs an AWS/ECR target, re-add the
+  # step from defdo_cms/.woodpecker/harbor-image.yml and create the ECR repo.
+
+  - name: cleanup-temp-tags
+    image: alpine:3
+    when:
+      - event: tag
+    environment:
+      DOCKER_USERNAME:
+        from_secret: docker_username
+      DOCKER_PASSWORD:
+        from_secret: docker_password
+    commands:
+      - set -u
+      - . ./.ci-image-env
+      - apk add --no-cache curl > /dev/null
+      - |
+        REPO_PATH="$${IMAGE_REPO#$${REGISTRY_HOST}/}"
+        PROJECT="$${REPO_PATH%%/*}"
+        REPOSITORY="$${REPO_PATH#*/}"
+        ENCODED_REPOSITORY="$${REPOSITORY//\//%2F}"
+        for TAG in "$${TEMP_BASE}-amd64" "$${TEMP_BASE}-arm64"; do
+          STATUS_CODE=$$(curl -sS -o /tmp/harbor-delete-response.txt -w "%{http_code}" \
+            -u "$${DOCKER_USERNAME}:$${DOCKER_PASSWORD}" \
+            -X DELETE \
+            "https://$${REGISTRY_HOST}/api/v2.0/projects/$${PROJECT}/repositories/$${ENCODED_REPOSITORY}/artifacts/$${TAG}/tags/$${TAG}")
+          case "$${STATUS_CODE}" in
+            200|202|204|404) echo "Cleanup for $${TAG}: HTTP $${STATUS_CODE}" ;;
+            *) echo "Cleanup warning for $${TAG}: HTTP $${STATUS_CODE}"; cat /tmp/harbor-delete-response.txt || true ;;
+          esac
+        done
+    depends_on:
+      - manifest
+
+  - name: notify
+    image: alpine:3
+    when:
+      - event: tag
+    environment:
+      DISCORD_WEBHOOK:
+        from_secret: discord_webhook
+    commands:
+      - set -u
+      - . ./.ci-image-env
+      - apk add --no-cache curl > /dev/null
+      - |
+        if [ -z "$${DISCORD_WEBHOOK:-}" ]; then
+          echo "DISCORD_WEBHOOK not set; skipping notification."
+          exit 0
+        fi
+        curl -sS -H "Content-Type: application/json" -X POST \
+          -d "{\"content\":\"Harbor release published for defdo/defdo_ddns ($${VERSION}).\"}" \
+          "$${DISCORD_WEBHOOK}"
+    depends_on:
+      - cleanup-temp-tags
