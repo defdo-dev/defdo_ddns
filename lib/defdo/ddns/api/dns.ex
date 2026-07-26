@@ -3,6 +3,8 @@ defmodule Defdo.DDNS.API.DNS do
 
   require Logger
 
+  alias Defdo.DDNS.DesiredStateStore
+
   @spec upsert_free_domain(map()) :: {:ok, map()} | {:error, term()}
   def upsert_free_domain(params) when is_map(params) do
     with {:ok, fqdn} <- fetch_required_string(params, "fqdn"),
@@ -11,7 +13,7 @@ defmodule Defdo.DDNS.API.DNS do
          {:ok, zone_id} <- fetch_zone_id(base_domain),
          {:ok, desired_record} <- build_desired_record(params, fqdn, base_domain),
          {:ok, result} <- upsert_cname(zone_id, desired_record) do
-      {:ok, result}
+      {:ok, Map.put(result, :declared, declare(desired_record, base_domain))}
     end
   rescue
     error ->
@@ -20,6 +22,32 @@ defmodule Defdo.DDNS.API.DNS do
   end
 
   def upsert_free_domain(_), do: {:error, {:validation, %{"params" => "must be an object"}}}
+
+  # A record this deployment just created is managed from birth. Without this,
+  # every domain provisioned through the API showed up as unmanaged on the next
+  # inventory and an operator had to adopt a record the platform itself had
+  # created — the API would have been manufacturing exactly the drift adoption
+  # exists to clean up.
+  #
+  # Never fatal. The DNS record already exists at this point, so failing the
+  # response would report as failed something that succeeded. The caller gets
+  # `declared: false` and the log says why.
+  defp declare(desired_record, base_domain) do
+    case DesiredStateStore.declare(Map.put(desired_record, "domain", base_domain)) do
+      {:ok, _doc} ->
+        true
+
+      {:error, :disabled} ->
+        false
+
+      {:error, reason} ->
+        Logger.warning(
+          "dns_api_declare_failed name=#{desired_record["name"]} reason=#{inspect(reason)}"
+        )
+
+        false
+    end
+  end
 
   defp upsert_cname(zone_id, desired_record) do
     existing_records = ddns_module().list_dns_records(zone_id, name: desired_record["name"])

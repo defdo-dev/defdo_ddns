@@ -112,8 +112,12 @@ defmodule Defdo.DDNS.Adoption do
 
   # Already-decided entries reaching accept/2 a second time must not re-promote
   # and must not fail; the record is already declared.
+  # Declaring is DesiredStateStore's job, not ours: the provisioning API
+  # declares records it creates through the same function, and two copies of
+  # the entry shape would eventually disagree about what "already declared"
+  # means.
   defp promote(%{"state" => "accepted", "record" => record}) do
-    case DesiredStateStore.update(&declare(&1, record)) do
+    case DesiredStateStore.declare(record) do
       {:ok, _doc} -> :ok
       {:error, :disabled} -> {:error, :desired_state_disabled}
       {:error, reason} -> {:error, reason}
@@ -121,31 +125,6 @@ defmodule Defdo.DDNS.Adoption do
   end
 
   defp promote(_entry), do: :ok
-
-  defp declare(doc, record) do
-    entry = %{
-      "domain" => record["domain"] || "",
-      "name" => record["name"],
-      "target" => record["content"] || "@",
-      "proxied" => record["proxied"] || false,
-      "ttl" => record["ttl"] || 1
-    }
-
-    update_in(doc, ["cloudflare", "cname_records"], fn declared ->
-      declared = declared || []
-
-      if Enum.any?(declared, &same_record?(&1, entry)) do
-        declared
-      else
-        declared ++ [entry]
-      end
-    end)
-  end
-
-  defp same_record?(a, b) do
-    String.downcase(to_string(a["name"])) == String.downcase(to_string(b["name"])) and
-      to_string(a["domain"]) == to_string(b["domain"])
-  end
 
   defp rollback(id, entry) do
     entries = load()
