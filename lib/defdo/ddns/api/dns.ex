@@ -12,7 +12,8 @@ defmodule Defdo.DDNS.API.DNS do
          :ok <- ensure_zone_membership(fqdn, base_domain),
          {:ok, zone_id} <- fetch_zone_id(base_domain),
          {:ok, desired_record} <- build_desired_record(params, fqdn, base_domain),
-         {:ok, result} <- upsert_cname(zone_id, desired_record) do
+         {:ok, result} <-
+           upsert_cname(zone_id, desired_record, get_boolean(params, "update_existing", true)) do
       {:ok, Map.put(result, :declared, declare(desired_record, base_domain))}
     end
   rescue
@@ -49,7 +50,7 @@ defmodule Defdo.DDNS.API.DNS do
     end
   end
 
-  defp upsert_cname(zone_id, desired_record) do
+  defp upsert_cname(zone_id, desired_record, update_existing?) do
     existing_records = ddns_module().list_dns_records(zone_id, name: desired_record["name"])
     cname_records = Enum.filter(existing_records, &(&1["type"] == "CNAME"))
     conflicting_records = Enum.reject(existing_records, &(&1["type"] == "CNAME"))
@@ -79,8 +80,11 @@ defmodule Defdo.DDNS.API.DNS do
           [] ->
             {:ok, %{action: "noop", record: List.first(cname_records)}}
 
-          _ ->
+          _ when update_existing? ->
             apply_updates(zone_id, updates)
+
+          _ ->
+            {:error, {:conflict, %{types: ["CNAME"], reason: "existing_record_differs"}}}
         end
     end
   end
@@ -230,6 +234,7 @@ defmodule Defdo.DDNS.API.DNS do
       "target" -> :target
       "proxied" -> :proxied
       "ttl" -> :ttl
+      "update_existing" -> :update_existing
       _ -> nil
     end
   end

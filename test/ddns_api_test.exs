@@ -34,6 +34,53 @@ defmodule Defdo.DDNS.APITest do
     def apply_update(_zone_id, _input), do: {false, nil}
   end
 
+  defmodule FakeExistingDDNS do
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
+    def get_zone_id(_), do: nil
+
+    def list_dns_records("zone_123", name: name) do
+      [
+        %{
+          "id" => "cname_1",
+          "name" => name,
+          "type" => "CNAME",
+          "content" => "external.example",
+          "proxied" => false,
+          "ttl" => 300
+        }
+      ]
+    end
+
+    def create_dns_record(_zone_id, _record), do: {false, nil}
+    def input_for_update_cname_records(_records, desired_record), do: [desired_record]
+
+    def apply_update("zone_123", desired_record) do
+      {true, Map.put(desired_record, "id", "cname_1")}
+    end
+  end
+
+  defmodule FakeExactDDNS do
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
+    def get_zone_id(_), do: nil
+
+    def list_dns_records("zone_123", name: name) do
+      [
+        %{
+          "id" => "cname_1",
+          "name" => name,
+          "type" => "CNAME",
+          "content" => "example.test",
+          "proxied" => true,
+          "ttl" => 1
+        }
+      ]
+    end
+
+    def create_dns_record(_zone_id, _record), do: {false, nil}
+    def input_for_update_cname_records(_records, _desired_record), do: []
+    def apply_update(_zone_id, _input), do: raise("exact record must not be updated")
+  end
+
   setup do
     previous_api_config = Application.get_env(:defdo_ddns, Defdo.DDNS.API)
 
@@ -108,6 +155,80 @@ defmodule Defdo.DDNS.APITest do
     assert record["ttl"] == 300
   end
 
+  test "DNS.upsert_free_domain/1 resolves a dotless target relative to the base domain" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeCreateDDNS,
+      default_proxied: true
+    )
+
+    assert {:ok, %{action: "created", record: record}} =
+             DNS.upsert_free_domain(%{
+               "fqdn" => fqdn,
+               "base_domain" => base_domain,
+               "target" => "origin"
+             })
+
+    assert record["content"] == "origin.#{base_domain}"
+  end
+
+  test "DNS.upsert_free_domain/1 preserves update behavior by default" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeExistingDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    assert {:ok, %{action: "updated", record: record}} =
+             DNS.upsert_free_domain(%{"fqdn" => fqdn, "base_domain" => base_domain})
+
+    assert record["content"] == base_domain
+    assert record["proxied"] == true
+  end
+
+  test "DNS.upsert_free_domain/1 rejects a mismatched CNAME when updates are disabled" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeExistingDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    assert {:error, {:conflict, %{types: ["CNAME"], reason: "existing_record_differs"}}} =
+             DNS.upsert_free_domain(%{
+               "fqdn" => fqdn,
+               "base_domain" => base_domain,
+               "update_existing" => false
+             })
+  end
+
+  test "DNS.upsert_free_domain/1 declares an exact CNAME when updates are disabled" do
+    base_domain = "example.test"
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeExactDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    assert {:ok, %{action: "noop", record: record}} =
+             DNS.upsert_free_domain(%{
+               "fqdn" => fqdn,
+               "base_domain" => base_domain,
+               "update_existing" => false
+             })
+
+    assert record["content"] == base_domain
+  end
+
   test "DNS.upsert_free_domain/1 validates fqdn zone" do
     base_domain = random_domain()
     other_domain = random_domain()
@@ -160,6 +281,41 @@ defmodule Defdo.DDNS.APITest do
 
     assert %{"status" => "ok", "result" => %{"action" => "created"}} =
              Jason.decode!(conn.resp_body)
+  end
+
+  test "router returns conflict instead of updating when update_existing is false" do
+    base_domain = random_domain()
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      token: "secret",
+      ddns_module: FakeExistingDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    payload = %{
+      "fqdn" => fqdn,
+      "base_domain" => base_domain,
+      "update_existing" => false
+    }
+
+    conn =
+      conn(:post, "/v1/dns/upsert", Jason.encode!(payload))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer secret")
+      |> Router.call([])
+
+    assert conn.status == 409
+
+    assert %{
+             "status" => "error",
+             "error" => "dns_conflict",
+             "details" => %{
+               "types" => ["CNAME"],
+               "reason" => "existing_record_differs"
+             }
+           } = Jason.decode!(conn.resp_body)
   end
 
   test "router accepts x-api-token header" do

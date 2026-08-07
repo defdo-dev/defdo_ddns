@@ -225,6 +225,9 @@ Endpoints:
 
 - `GET /health` returns `{ "status": "ok" }`.
 - `POST /v1/dns/upsert` upserts a CNAME record for a FQDN under a base zone.
+  Send `"update_existing": false` for create-or-declare behavior: a missing
+  record is created, an exact record is declared without mutation, and a
+  mismatched existing CNAME returns `409 dns_conflict`.
 
 Auth headers:
 
@@ -239,7 +242,7 @@ Example request:
 curl -X POST "http://localhost:4050/v1/dns/upsert" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${DDNS_API_TOKEN}" \
-  -d '{"fqdn":"acme-idp.defdo.in","base_domain":"defdo.in","target":"@","proxied":true}'
+  -d '{"fqdn":"acme-idp.defdo.in","base_domain":"defdo.in","target":"@","proxied":true,"update_existing":false}'
 ```
 
 Multi-tenant-light request:

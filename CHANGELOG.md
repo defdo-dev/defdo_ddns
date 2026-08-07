@@ -1,3 +1,13 @@
+# 0.5.1
+
+## 🐞 Fixes
+
+- **DNS clients can create or declare without overwriting an existing record.**
+  `POST /v1/dns/upsert` now accepts `update_existing: false`. Missing CNAMEs are
+  created, exact matches are declared in desired state, and mismatched existing
+  CNAMEs return `409 dns_conflict` instead of silently changing target, proxy,
+  or TTL. Omitting the option preserves the existing upsert behavior.
+
 # 0.5.0
 
 ## ✨ Features

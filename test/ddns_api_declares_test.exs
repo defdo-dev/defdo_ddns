@@ -29,6 +29,30 @@ defmodule Defdo.DDNS.APIDeclaresTest do
     def apply_update(_zone_id, _input), do: {true, %{"id" => "record_1"}}
   end
 
+  defmodule FakeExactDDNS do
+    def get_zone_id(zone) when is_binary(zone) and zone != "", do: "zone_123"
+    def get_zone_id(_), do: nil
+
+    def list_dns_records("zone_123", name: name) do
+      base_domain = String.replace_prefix(name, "acme-idp.", "")
+
+      [
+        %{
+          "id" => "record_1",
+          "type" => "CNAME",
+          "name" => name,
+          "content" => base_domain,
+          "proxied" => true,
+          "ttl" => 1
+        }
+      ]
+    end
+
+    def create_dns_record(_zone_id, _record), do: {false, nil}
+    def input_for_update_cname_records(_records, _desired), do: []
+    def apply_update(_zone_id, _input), do: raise("exact record must not be updated")
+  end
+
   setup do
     previous_api = Application.get_env(:defdo_ddns, Defdo.DDNS.API)
     previous_store = Application.get_env(:defdo_ddns, DesiredStateStore)
@@ -85,6 +109,30 @@ defmodule Defdo.DDNS.APIDeclaresTest do
       |> Enum.count(&(&1["name"] == fqdn))
 
     assert matching == 1
+  end
+
+  test "an exact existing record is declared without mutation when updates are disabled" do
+    base_domain = "defdo-test-#{System.unique_integer([:positive])}.dev"
+    fqdn = "acme-idp.#{base_domain}"
+
+    Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+      ddns_module: FakeExactDDNS,
+      default_target: "@",
+      default_proxied: true
+    )
+
+    assert {:ok, %{action: "noop", declared: true}} =
+             DNS.upsert_free_domain(%{
+               "fqdn" => fqdn,
+               "base_domain" => base_domain,
+               "update_existing" => false
+             })
+
+    assert {:ok, doc} = DesiredStateStore.load()
+
+    assert Enum.any?(get_in(doc, ["cloudflare", "cname_records"]), fn entry ->
+             entry["name"] == fqdn and entry["target"] == base_domain
+           end)
   end
 
   test "the declared entry carries the identity inventory matches on" do
