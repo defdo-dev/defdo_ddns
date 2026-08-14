@@ -38,17 +38,12 @@ steps:
         from_secret: docker_username
       DOCKER_PASSWORD:
         from_secret: docker_password
-      BUILDKIT_HOST_AMD64:
-        from_secret: buildkit_host_amd64
-      BUILDKIT_HOST_ARM64:
-        from_secret: buildkit_host_arm64
     commands:
       - |
         set -eu
         missing=""
         for var in HEX_ORG_NAME HEX_ORG_TOKEN \
-                   DOCKER_USERNAME DOCKER_PASSWORD \
-                   BUILDKIT_HOST_AMD64 BUILDKIT_HOST_ARM64; do
+                   DOCKER_USERNAME DOCKER_PASSWORD; do
           eval "val=\$${$$var:-}"
           if [ -z "$$val" ]; then
             missing="$$missing $$var"
@@ -90,7 +85,7 @@ steps:
         cat .ci-image-env
 
   - name: build-amd64
-    image: moby/buildkit:v0.16.0
+    image: moby/buildkit:v0.23.2
     when:
       - event: tag
     environment:
@@ -100,13 +95,26 @@ steps:
         from_secret: docker_password
       HEX_ORG_TOKEN:
         from_secret: hex_org_token
-      BUILDKIT_HOST:
-        from_secret: buildkit_host_amd64
+      # In-cluster Service DNS, NOT a secret holding a node address. The buildkit
+      # pods are pinned with nodeSelector, so a node address looks stable right up
+      # until the workload is rescheduled. Keeping it in a secret is also what lets
+      # a stale value survive unreviewed: it cost defdo_wa_service four days of
+      # missing images (defdo-dev/defdo_wa_service#19), and it stopped
+      # defdo_theme_hub's amd64 image at the 0.6.0 tag -- three builds died on
+      # `failed to create temp dir` against a daemon whose logs never recorded
+      # them, because they never reached the daemon behind this Service. These are
+      # addresses, not credentials.
+      BUILDKIT_HOST: tcp://buildkit-amd64.defdo-ci.svc.cluster.local:1234
     commands:
       - set -eu
       - . ./.ci-image-env
       - export DOCKER_CONFIG=/tmp/dockercfg && mkdir -p $$DOCKER_CONFIG
       - 'printf ''{"auths":{"%s":{"auth":"%s"}}}'' "$$REGISTRY_HOST" "$$(printf "%s:%s" "$$DOCKER_USERNAME" "$$DOCKER_PASSWORD" | base64 -w0)" > $$DOCKER_CONFIG/config.json'
+      # Which builder is on the other end, and is it even up? `debug workers`
+      # answers both in a second and prints the worker platforms, so a wrong or
+      # unreachable daemon is named here instead of surfacing as a cryptic error
+      # inside a build that already looked started.
+      - buildctl --addr "$$BUILDKIT_HOST" debug workers
       - |
         buildctl --addr "$$BUILDKIT_HOST" build \
           --frontend dockerfile.v0 \
@@ -121,7 +129,7 @@ steps:
       - prepare
 
   - name: build-arm64
-    image: moby/buildkit:v0.16.0
+    image: moby/buildkit:v0.23.2
     when:
       - event: tag
     environment:
@@ -131,13 +139,26 @@ steps:
         from_secret: docker_password
       HEX_ORG_TOKEN:
         from_secret: hex_org_token
-      BUILDKIT_HOST:
-        from_secret: buildkit_host_arm64
+      # In-cluster Service DNS, NOT a secret holding a node address. The buildkit
+      # pods are pinned with nodeSelector, so a node address looks stable right up
+      # until the workload is rescheduled. Keeping it in a secret is also what lets
+      # a stale value survive unreviewed: it cost defdo_wa_service four days of
+      # missing images (defdo-dev/defdo_wa_service#19), and it stopped
+      # defdo_theme_hub's amd64 image at the 0.6.0 tag -- three builds died on
+      # `failed to create temp dir` against a daemon whose logs never recorded
+      # them, because they never reached the daemon behind this Service. These are
+      # addresses, not credentials.
+      BUILDKIT_HOST: tcp://buildkit-arm64.defdo-ci.svc.cluster.local:1234
     commands:
       - set -eu
       - . ./.ci-image-env
       - export DOCKER_CONFIG=/tmp/dockercfg && mkdir -p $$DOCKER_CONFIG
       - 'printf ''{"auths":{"%s":{"auth":"%s"}}}'' "$$REGISTRY_HOST" "$$(printf "%s:%s" "$$DOCKER_USERNAME" "$$DOCKER_PASSWORD" | base64 -w0)" > $$DOCKER_CONFIG/config.json'
+      # Which builder is on the other end, and is it even up? `debug workers`
+      # answers both in a second and prints the worker platforms, so a wrong or
+      # unreachable daemon is named here instead of surfacing as a cryptic error
+      # inside a build that already looked started.
+      - buildctl --addr "$$BUILDKIT_HOST" debug workers
       - |
         buildctl --addr "$$BUILDKIT_HOST" build \
           --frontend dockerfile.v0 \
