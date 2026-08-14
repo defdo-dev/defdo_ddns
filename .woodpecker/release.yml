@@ -34,7 +34,7 @@ steps:
           echo "ERROR: tag '$TAG' does not match mix.exs version '$VSN'"
           exit 1
         fi
-      - mix do local.hex --force, local.rebar --force
+      - mix do local.hex --force + local.rebar --force
       - mix deps.get
       - mix format --check-formatted
       - mix deps.unlock --check-unused
@@ -56,5 +56,5 @@ steps:
           echo "ERROR: HEX_API_KEY is required to publish"
           exit 1
         fi
-      - mix do local.hex --force, local.rebar --force
+      - mix do local.hex --force + local.rebar --force
       - mix hex.publish --yes
