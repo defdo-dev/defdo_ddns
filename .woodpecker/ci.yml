@@ -1,9 +1,16 @@
-# ─── defdo_ddns CI + Hex publish ─────────────────────────────────────────────
+# ─── defdo_ddns CI (push / pull_request / manual) ───────────────────────────
 #
 # Migrated from GitHub Actions: that account's billing is blocked, so every job
 # died in seconds without running a step and nothing could ship.
 #
-# Secrets: hex_api_key
+# ─── Pipeline rule: compile ONCE, fan out ──────────────────────────────────
+# All steps of a workflow share the same workspace volume, so `deps/` and
+# `_build/` written by the `compile` step persist into every step that
+# `depends_on` it. Downstream steps therefore NEVER recompile — they mount the
+# warm `_build` and run their check straight away. `compile` warms BOTH envs
+# (dev for warnings-as-errors + package build, test for the suite) so nothing
+# after it pays a compile cost. `depends_on: [compile]` also lets `format` and
+# `test` run in parallel once the single compile finishes.
 
 # Tier 1: real container images on the k8s docker agent. Without this label
 # Woodpecker sends the workflow to whichever agent is free, and the local exec
@@ -14,58 +21,34 @@ labels:
 when:
   - event: [push, pull_request]
     branch: main
-  - event: tag
   - event: manual
 
 steps:
-  - name: format-and-compile
+  - name: compile
     image: elixir:1.19.5
     when:
       event: [push, pull_request, manual]
     commands:
       - mix do local.hex --force, local.rebar --force
       - mix deps.get
+      - mix compile --warnings-as-errors
+      - MIX_ENV=test mix compile --warnings-as-errors
+
+  - name: format
+    image: elixir:1.19.5
+    when:
+      event: [push, pull_request, manual]
+    depends_on: [compile]
+    commands:
+      - mix do local.hex --force, local.rebar --force
       - mix format --check-formatted
       - mix deps.unlock --check-unused
-      - mix compile --warnings-as-errors
 
   - name: test
     image: elixir:1.19.5
     when:
       event: [push, pull_request, manual]
+    depends_on: [compile]
     commands:
       - mix do local.hex --force, local.rebar --force
-      - mix deps.get
-      - mix compile --warnings-as-errors
       - mix test
-
-  - name: release-validate
-    image: elixir:1.19.5
-    when:
-      event: tag
-    commands:
-      - mix do local.hex --force, local.rebar --force
-      - mix deps.get
-      - mix format --check-formatted
-      - mix deps.unlock --check-unused
-      - mix compile --warnings-as-errors
-      - mix test
-      - mix hex.build
-
-  - name: hex-publish
-    image: elixir:1.19.5
-    when:
-      event: tag
-    depends_on: [release-validate]
-    environment:
-      HEX_API_KEY:
-        from_secret: hex_api_key
-    commands:
-      - |
-        if [ -z "$$HEX_API_KEY" ]; then
-          echo "ERROR: HEX_API_KEY is required to publish"
-          exit 1
-        fi
-      - mix do local.hex --force, local.rebar --force
-      - mix deps.get
-      - mix hex.publish --yes
