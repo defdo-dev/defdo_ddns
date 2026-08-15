@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "language": "en",
+  "contextBudgetChars": 8000,
+  "recentLessonCount": 20,
+  "checkpointRetention": 100,
+  "hooks": {
+    "stopCheckpoint": false,
+    "subagentContext": true
+  },
+  "verification": {
+    "outputPreviewChars": 4000,
+    "timeoutMs": 120000
+  }
+}

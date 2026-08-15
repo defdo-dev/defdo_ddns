@@ -1,0 +1,2 @@
+# Local runtime safety data; canonical memory remains versioned.
+.runtime/
