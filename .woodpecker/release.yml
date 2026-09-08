@@ -1,0 +1,60 @@
+# ─── defdo_ddns RELEASE (tag) ────────────────────────────────────────────────
+#
+# Migrated from GitHub Actions: that account's billing is blocked, so every job
+# died in seconds without running a step and nothing could ship.
+#
+# Secrets: hex_api_key
+#
+# release-validate is the compile on the tag path (it warms _build); hex-publish
+# depends_on it and reuses the warm workspace instead of recompiling.
+
+labels:
+  platform: linux/amd64
+
+when:
+  - event: tag
+
+steps:
+  - name: release-validate
+    image: elixir:1.19.5
+    when:
+      event: tag
+    commands:
+      - |
+        set -e
+        TAG="${CI_COMMIT_TAG}"
+        case "$TAG" in
+          v*)
+            echo "ERROR: tag '$TAG' is v-prefixed. Defdo release tags are bare: ${TAG#v}"
+            exit 1
+            ;;
+        esac
+        VSN="$(grep -oE 'version: "[^"]+"' mix.exs | head -1 | sed -E 's/version: "([^"]+)"/\1/')"
+        if [ "$TAG" != "$VSN" ]; then
+          echo "ERROR: tag '$TAG' does not match mix.exs version '$VSN'"
+          exit 1
+        fi
+      - mix do local.hex --force + local.rebar --force
+      - mix deps.get
+      - mix format --check-formatted
+      - mix deps.unlock --check-unused
+      - mix compile --warnings-as-errors
+      - mix test
+      - mix hex.build
+
+  - name: hex-publish
+    image: elixir:1.19.5
+    when:
+      event: tag
+    depends_on: [release-validate]
+    environment:
+      HEX_API_KEY:
+        from_secret: hex_api_key
+    commands:
+      - |
+        if [ -z "$$HEX_API_KEY" ]; then
+          echo "ERROR: HEX_API_KEY is required to publish"
+          exit 1
+        fi
+      - mix do local.hex --force + local.rebar --force
+      - mix hex.publish --yes
