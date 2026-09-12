@@ -68,4 +68,11 @@ steps:
         fi
       - mix do local.hex --force, local.rebar --force
       - mix deps.get
-      - mix hex.publish --yes
+        # Package and docs are published SEPARATELY on purpose. `mix hex.publish`
+        # does both at once, and when its docs phase re-submits the release Hex
+        # answers `must include the --replace flag to update an existing release`:
+        # the package is live and the step still goes red. A red that does not mean
+        # "not published" is worse than no signal — the next person reaches for
+        # --replace and overwrites a published version.
+      - mix hex.publish package --yes
+      - mix hex.publish docs --yes
