@@ -1,2 +1,6 @@
 # Local runtime safety data; canonical memory remains versioned.
 .runtime/
+# head/dirty/diffFingerprint describe THIS checkout.
+state.json
+# What the harness observed on THIS machine.
+runs/
