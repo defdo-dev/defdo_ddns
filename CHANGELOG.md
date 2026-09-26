@@ -1,3 +1,12 @@
+# Unreleased
+
+## 🐞 Fixes
+
+- `get_cloudflare_key/2` returns its default when `config :defdo_ddns, Cloudflare`
+  is absent instead of raising. A host app embedding the package without that
+  config no longer crashes on first call, and the test suite no longer fails
+  depending on seed.
+
 # 0.5.1
 
 ## 🐞 Fixes

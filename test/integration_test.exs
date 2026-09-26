@@ -21,14 +21,15 @@ defmodule Defdo.IntegrationTest do
 
   describe "error handling" do
     test "handles missing API token gracefully" do
+      previous = Application.get_env(:defdo_ddns, Cloudflare)
       Application.delete_env(:defdo_ddns, Cloudflare)
 
-      # Should handle missing configuration without crashing
-      # When no config exists, get_cloudflare_key should handle nil gracefully
-      # This test verifies the function doesn't crash with missing config
-      assert_raise FunctionClauseError, fn ->
-        DDNS.get_cloudflare_key(:api_token)
-      end
+      on_exit(fn ->
+        if previous, do: Application.put_env(:defdo_ddns, Cloudflare, previous)
+      end)
+
+      assert DDNS.get_cloudflare_key(:api_token) == ""
+      assert DDNS.get_cloudflare_key(:auth_token, nil) == nil
     end
 
     test "handles malformed domain mappings" do

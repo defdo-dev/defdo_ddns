@@ -609,7 +609,8 @@ defmodule Defdo.Cloudflare.DDNS do
   def get_cloudflare_key(key, default \\ "")
 
   def get_cloudflare_key(key, default) do
-    Application.get_env(:defdo_ddns, Cloudflare)
+    :defdo_ddns
+    |> Application.get_env(Cloudflare, [])
     |> Keyword.get(key, default)
   end
 

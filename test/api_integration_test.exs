@@ -61,17 +61,16 @@ defmodule Defdo.APIIntegrationTest do
     end
 
     test "handles nil configuration" do
+      previous = Application.get_env(:defdo_ddns, Cloudflare)
       Application.delete_env(:defdo_ddns, Cloudflare)
 
-      # When no config exists, get_cloudflare_key should handle nil gracefully
-      # This test verifies the function doesn't crash with missing config
-      assert_raise FunctionClauseError, fn ->
-        DDNS.get_cloudflare_key(:domain_mappings)
-      end
+      on_exit(fn ->
+        if previous, do: Application.put_env(:defdo_ddns, Cloudflare, previous)
+      end)
 
-      assert_raise FunctionClauseError, fn ->
-        DDNS.get_cloudflare_key(:api_token)
-      end
+      assert DDNS.get_cloudflare_key(:domain_mappings, %{}) == %{}
+      assert DDNS.get_cloudflare_key(:api_token) == ""
+      assert DDNS.get_all_cloudflare_config_domains() == []
     end
 
     test "handles complex subdomain structures" do
