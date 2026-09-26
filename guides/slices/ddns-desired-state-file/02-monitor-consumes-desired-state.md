@@ -1,3 +1,6 @@
+> **SUPERSEDED (2026-09-26)** by `guides/slices/ddns-service-hardening/04-monitor-consumes-desired-state.md`.
+> This slice was never implemented. Do not execute it.
+
 # Slice 02 - Monitor Consumes Desired State
 
 ## Goal

@@ -1,0 +1,79 @@
+---
+kind: implementation
+---
+
+# DDNS Service Hardening
+
+This set turns `defdo_ddns` from "a loop that usually works" into a service whose
+intent has one home, whose writes cannot lose data, whose Cloudflare calls are
+bounded, and whose state is observable. It is written from a full read of `lib/`
+at `origin/main@2a98d69` (0.5.1) on 2026-09-26.
+
+## Phase 1 is internal — no product.md required
+
+Slices 01–06 change correctness, safety and structure. None of them adds
+something a person sees or does, with one deliberate exception that *narrows*
+access (slice 06, a security fix). Per `defdo-slice-authoring` a purely internal
+set says so here instead of carrying a `product.md`.
+
+Phase 2 (readiness/status endpoint, telemetry, heartbeat wiring) **does** change
+what an operator sees. Its scenarios are drafted in `product.md`, which is
+**not approved**. No phase 2 slice exists until the owner approves it.
+
+## Why — defects found in the read (evidence in `00-conventions.md`)
+
+| # | Defect | Where | Consequence |
+|---|---|---|---|
+| D1 | The monitor never reads the desired-state file. `ddns-desired-state-file/02` was never implemented. | `monitor.ex` reads `Application.get_env` + `RecordStore` only; `DesiredStateStore` is only *written* | `POST /v1/dns/upsert` "declares" records and adoption "accepts" them into a file nothing converges. 0.5.0's "managed from birth" is false in practice. Inventory also ignores the file, so accepted records stay `unmanaged`. |
+| D2 | Read-modify-write on `desired_state.json` and `adoption.json` with no serialization and a shared `<file>.tmp` | `desired_state_store.ex:161-201,264-274`, `adoption.ex:49-68,173-196,243-262` | Two concurrent upserts (Bandit serves requests concurrently) → one declaration silently lost, or `File.rename` fails because the other writer already moved `.tmp`. |
+| D3 | A failed listing is read as "record absent" by the monitor | `monitor.ex:146-165` uses `list_dns_records/2`, which returns `[]` on error | With `AUTO_CREATE_DNS_RECORDS=true`, one transient Cloudflare error creates a **duplicate A record** (Cloudflare allows several A records per name). |
+| D4 | `get_zone_ssl_mode/1` bypasses `decode_envelope/2` | `ddns.ex:156-186` | An edge error page (binary body) hits `Map.get(body, ...)` → `BadMapError`; the per-domain rescue swallows it and the whole domain's result collapses into one error line after writes already happened. |
+| D5 | No pagination on the full-zone listing | `ddns.ex:126-146`, used by `inventory.ex:895` | Zones larger than one page are inventoried partially → false `missing`, and unmanaged records on later pages are never discovered. |
+| D6 | Req defaults are implicit: 15 s receive timeout, 3 retries with 1/2/4 s backoff on every GET | every `Req.*` call in `ddns.ex` | A degraded Cloudflare stretches one cycle to minutes; `Monitor.checkup/0` uses `GenServer.call/2`'s 5 s default and exits the caller. The test suite spends ~7 s sleeping in retries. |
+| D7 | 3 listings per declared hostname per cycle, and `get_zone_id` every cycle | `monitor.ex:148,198,381` | N+1 against a rate-limited API (Cloudflare: 1200 requests / 5 min per user). |
+| D8 | Adoption endpoints accept any tenant client token | `router.ex:54-93` call `authorize/1` but never `authorize_base_domain/2` | A tenant client scoped to `a.com` can list every host in the estate and accept/reject adoption for `b.com`. |
+| D9 | Order-dependent test failures; `get_cloudflare_key/2` crashes on missing config | `ddns.ex:611-614`; `test/api_integration_test.exs:63-75`, `test/integration_test.exs:23-32` delete the env and never restore it — and assert the crash | `mix test --seed 8` fails 3 tests on a clean checkout. A host app that embeds the package without `config :defdo_ddns, Cloudflare` crashes on the first call. |
+| D10 | No record of what the last cycle did | `Monitor.State` holds only `refetch_every` | Nothing can answer "is DDNS converging?" — prerequisite for the heartbeat set and for phase 2. |
+
+## Slice order
+
+| Slice | Title | Serves | Fixes | Depends on |
+|---|---|---|---|---|
+| `00-conventions.md` | read before any slice | — | — | — |
+| `01-test-isolation-and-config-access.md` | green on every seed; nil-safe config | [] internal | D9 | — |
+| `02-cloudflare-client-hardening.md` | bounded requests, envelope everywhere, pagination | [] internal | D4 D5 D6 | 01 |
+| `03-serialized-file-writes.md` | no lost updates on either JSON file | [] internal | D2 | 01 |
+| `04-monitor-consumes-desired-state.md` | one intent source for monitor and inventory | [] internal | D1 | 01, 03 |
+| `05-monitor-cycle-and-status.md` | one listing per zone, safe on failure, cycle status | [] internal | D3 D7 D10 (+D6 caller timeout) | 02, 04 |
+| `06-adoption-operator-only.md` | adoption requires the operator token | [] internal (security narrowing) | D8 | 01 |
+| `07-verification.md` | durable gate for the set | — | — | 01–06 |
+
+02, 03 and 06 are independent of each other and may run in parallel (their
+`## Targets` do not overlap). 04 and 05 both edit `monitor.ex` and must be
+sequential.
+
+`ddns-desired-state-file/02-monitor-consumes-desired-state.md` is **superseded**
+by slice 04 here. Do not execute the old one.
+
+## Phase 2 — blocked on `product.md` approval
+
+Candidate slices, not written:
+
+- `/ready` + `GET /v1/status` (reads the cycle status from slice 05, the record
+  store status and `DesiredStateStore.status/0`).
+- `:telemetry` events per cycle and per Cloudflare call (`telemetry` 1.4.2 is
+  already in `mix.lock` through Req/Finch).
+- Wire `ddns-heartbeat/01` to fire from the cycle-completed point slice 05
+  creates, instead of from inside `execute_monitor/0`.
+
+## Out of scope (recorded residue)
+
+- Error bodies return `details: inspect(reason)` on 500s (`router.ex:48,120`).
+  Low risk (reasons are atoms/paths), but it is internal detail on the wire.
+- `Defdo.Cloudflare.DDNS` is 974 lines holding the HTTP client, record planning
+  and config parsing. Splitting it is worthwhile, but it should not happen in
+  the same set that changes behaviour. Slices 02 and 04 add seams (`req_options/0`,
+  `normalize_cname_records/3`, `expand_hostnames/2`) that make that split
+  mechanical later.
+- Promotional `comment` on every created record (`ddns.ex:208-211`) — product
+  decision, not a hardening concern.
