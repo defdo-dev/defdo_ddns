@@ -29,6 +29,7 @@ defmodule Defdo.DDNS.Adoption do
   require Logger
 
   alias Defdo.DDNS.DesiredStateStore
+  alias Defdo.DDNS.FileLock
   alias Defdo.DDNS.Reconcile.Inventory
 
   @states ~w(pending accepted rejected)
@@ -47,23 +48,27 @@ defmodule Defdo.DDNS.Adoption do
   @spec refresh(String.t()) ::
           {:ok, %{added: non_neg_integer(), unchanged: non_neg_integer()}} | {:error, term()}
   def refresh(domain) when is_binary(domain) do
+    # Inventory is network I/O and stays outside the lock; only the file's
+    # read-merge-write is serialized.
     with {:ok, report} <- Inventory.inventory(domain) do
-      known = load()
+      locked(fn -> file_unmanaged(report["unmanaged"]) end)
+    end
+  end
 
-      {entries, added} =
-        Enum.reduce(report["unmanaged"], {known, 0}, fn record, {acc, added} ->
-          id = entry_id(record)
+  defp file_unmanaged(unmanaged) do
+    {entries, added} =
+      Enum.reduce(unmanaged, {load(), 0}, fn record, {acc, added} ->
+        id = entry_id(record)
 
-          if Map.has_key?(acc, id) do
-            {acc, added}
-          else
-            {Map.put(acc, id, new_entry(id, record)), added + 1}
-          end
-        end)
+        if Map.has_key?(acc, id) do
+          {acc, added}
+        else
+          {Map.put(acc, id, new_entry(id, record)), added + 1}
+        end
+      end)
 
-      with :ok <- save(entries) do
-        {:ok, %{added: added, unchanged: length(report["unmanaged"]) - added}}
-      end
+    with :ok <- save(entries) do
+      {:ok, %{added: added, unchanged: length(unmanaged) - added}}
     end
   end
 
@@ -127,17 +132,17 @@ defmodule Defdo.DDNS.Adoption do
   defp promote(_entry), do: :ok
 
   defp rollback(id, entry) do
-    entries = load()
+    locked(fn ->
+      restored =
+        Map.merge(entry, %{
+          "state" => "pending",
+          "decided_at" => nil,
+          "decided_by" => nil,
+          "note" => nil
+        })
 
-    restored =
-      Map.merge(entry, %{
-        "state" => "pending",
-        "decided_at" => nil,
-        "decided_by" => nil,
-        "note" => nil
-      })
-
-    save(Map.put(entries, id, restored))
+      save(Map.put(load(), id, restored))
+    end)
   end
 
   @doc "Reject a pending record. Durable: it never returns to pending."
@@ -171,6 +176,10 @@ defmodule Defdo.DDNS.Adoption do
   # --- decisions --------------------------------------------------------------
 
   defp decide(id, state, meta) when state in @states do
+    locked(fn -> decide_locked(id, state, meta) end)
+  end
+
+  defp decide_locked(id, state, meta) do
     entries = load()
 
     case Map.get(entries, id) do
@@ -240,6 +249,15 @@ defmodule Defdo.DDNS.Adoption do
     end
   end
 
+  # `path: nil` is a supported (non-persisting) configuration; there is no
+  # file to serialize on then.
+  defp locked(fun) do
+    case path() do
+      nil -> fun.()
+      file -> FileLock.with_lock(file, fun)
+    end
+  end
+
   defp save(entries) do
     case path() do
       nil ->
@@ -248,7 +266,7 @@ defmodule Defdo.DDNS.Adoption do
 
       file ->
         payload = Jason.encode!(%{"entries" => entries}, pretty: true)
-        temp = file <> ".tmp"
+        temp = FileLock.temp_path(file)
 
         with :ok <- File.mkdir_p(Path.dirname(file)),
              :ok <- File.write(temp, payload),
@@ -257,7 +275,9 @@ defmodule Defdo.DDNS.Adoption do
              :ok <- File.rename(temp, file) do
           :ok
         else
-          {:error, reason} -> {:error, {:adoption_write_failed, reason}}
+          {:error, reason} ->
+            _ = File.rm(temp)
+            {:error, {:adoption_write_failed, reason}}
         end
     end
   end

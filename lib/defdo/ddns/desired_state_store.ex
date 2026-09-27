@@ -29,6 +29,7 @@ defmodule Defdo.DDNS.DesiredStateStore do
   require Logger
 
   alias Defdo.DDNS.DesiredState
+  alias Defdo.DDNS.FileLock
 
   @default_path "/var/lib/defdo_ddns/desired_state.json"
 
@@ -130,8 +131,15 @@ defmodule Defdo.DDNS.DesiredStateStore do
   """
   @spec seed(keyword()) :: {:ok, DesiredState.t()} | {:error, term()}
   def seed(opts \\ []) do
-    with {:ok, file} <- require_path(),
-         :ok <- refuse_existing(file, Keyword.get(opts, :force, false)),
+    with {:ok, file} <- require_path() do
+      # The existence check and the write share one lock, or two first-boot
+      # readers could both pass the check and race to seed.
+      FileLock.with_lock(file, fn -> seed_locked(file, opts) end)
+    end
+  end
+
+  defp seed_locked(file, opts) do
+    with :ok <- refuse_existing(file, Keyword.get(opts, :force, false)),
          {:ok, doc} <- DesiredState.new(env_config()),
          :ok <- write(file, doc) do
       Logger.info(
@@ -145,10 +153,13 @@ defmodule Defdo.DDNS.DesiredStateStore do
   @doc "Persist a document, replacing whatever is on disk."
   @spec persist(DesiredState.t()) :: {:ok, DesiredState.t()} | {:error, term()}
   def persist(doc) do
-    with {:ok, file} <- require_path(),
-         {:ok, canonical} <- DesiredState.new(doc),
-         :ok <- write(file, canonical) do
-      {:ok, canonical}
+    with {:ok, file} <- require_path() do
+      FileLock.with_lock(file, fn ->
+        with {:ok, canonical} <- DesiredState.new(doc),
+             :ok <- write(file, canonical) do
+          {:ok, canonical}
+        end
+      end)
     end
   end
 
@@ -159,8 +170,12 @@ defmodule Defdo.DDNS.DesiredStateStore do
   @spec update((DesiredState.t() -> DesiredState.t())) ::
           {:ok, DesiredState.t()} | {:error, term()}
   def update(fun) when is_function(fun, 1) do
-    with {:ok, doc} <- load() do
-      persist(fun.(doc))
+    with {:ok, file} <- require_path() do
+      FileLock.with_lock(file, fn ->
+        with {:ok, doc} <- load() do
+          persist(fun.(doc))
+        end
+      end)
     end
   end
 
@@ -178,8 +193,12 @@ defmodule Defdo.DDNS.DesiredStateStore do
   """
   @spec declare(map()) :: {:ok, DesiredState.t()} | {:error, term()}
   def declare(record) when is_map(record) do
-    entry = entry_for(record)
+    with {:ok, file} <- require_path() do
+      FileLock.with_lock(file, fn -> declare_locked(entry_for(record)) end)
+    end
+  end
 
+  defp declare_locked(entry) do
     case load() do
       {:ok, doc} ->
         persist(put_cname(doc, entry))
@@ -264,12 +283,22 @@ defmodule Defdo.DDNS.DesiredStateStore do
   defp write(file, doc) do
     with {:ok, binary} <- DesiredState.encode(doc),
          :ok <- File.mkdir_p(Path.dirname(file)),
-         temp = file <> ".tmp",
-         :ok <- File.write(temp, binary),
-         :ok <- File.rename(temp, file) do
+         temp = FileLock.temp_path(file),
+         :ok <- write_and_rename(temp, file, binary) do
       :ok
     else
       {:error, reason} -> {:error, {:desired_state_write_failed, reason}}
+    end
+  end
+
+  defp write_and_rename(temp, file, binary) do
+    with :ok <- File.write(temp, binary),
+         :ok <- File.rename(temp, file) do
+      :ok
+    else
+      {:error, reason} ->
+        _ = File.rm(temp)
+        {:error, reason}
     end
   end
 

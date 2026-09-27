@@ -13,6 +13,12 @@
   `result_info.total_pages` followed). Inventory on a zone larger than one page
   was partial: false "missing" records and undiscovered unmanaged ones.
 
+- Concurrent writes to the desired-state and adoption files no longer lose
+  updates. Parallel `POST /v1/dns/upsert` calls each read the file, added their
+  record and renamed a shared temp file over it; measured, 40 concurrent
+  declarations left 1 record. Writes are now serialized per file and use a
+  unique temp file.
+
 ## ✨ Features
 
 - `DDNS_IPV4_LOOKUP_URLS` / `DDNS_IPV6_LOOKUP_URLS`: public-IP lookup providers

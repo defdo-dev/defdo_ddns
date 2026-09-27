@@ -142,7 +142,21 @@ result).
 - `save/1`: `FileLock.temp_path(file)` instead of `file <> ".tmp"`, and
   `File.rm(temp)` on failure.
 
-`path/0` for adoption always returns a string (it defaults), so no nil branch.
+`path/0` for adoption defaults to a string, but `path: nil` in app env is a
+supported non-persisting configuration (`load/0` and `save/1` handle it), and
+`with_lock/2` only accepts a binary. Route every adoption lock through one
+private helper:
+
+```elixir
+  defp locked(fun) do
+    case path() do
+      nil -> fun.()
+      file -> FileLock.with_lock(file, fun)
+    end
+  end
+```
+
+and call `locked(fn -> ... end)` from `refresh/1`, `decide/3` and `rollback/2`.
 
 ## Step 4 — CHANGELOG
 
@@ -195,7 +209,8 @@ mix test --seed 8
 test -f lib/defdo/ddns/file_lock.ex
 ! grep -n 'file <> ".tmp"' lib/defdo/ddns/desired_state_store.ex lib/defdo/ddns/adoption.ex
 test "$(grep -c 'FileLock.with_lock' lib/defdo/ddns/desired_state_store.ex)" -ge 4
-test "$(grep -c 'FileLock.with_lock' lib/defdo/ddns/adoption.ex)" -ge 3
+grep -q 'FileLock.with_lock' lib/defdo/ddns/adoption.ex
+test "$(grep -c 'locked(fn' lib/defdo/ddns/adoption.ex)" -ge 3
 git diff --check
 ```
 
@@ -208,7 +223,7 @@ renamed.
 
 - [ ] `Defdo.DDNS.FileLock` exists with `with_lock/2` and `temp_path/1`.
 - [ ] `seed/1`, `persist/1`, `update/1`, `declare/1` lock; `load/0` does not.
-- [ ] `refresh/1` (store part only), `decide/3`, `rollback/2` lock; `accept/2` holds no lock itself.
+- [ ] `refresh/1` (store part only), `decide/3`, `rollback/2` lock through `locked/1`; `accept/2` holds no lock itself.
 - [ ] No `file <> ".tmp"` remains in either store.
 - [ ] The 40-way declare test failed before the change (noted in commit body) and passes after.
 - [ ] Full suite green on default seed and seed 8.
