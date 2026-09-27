@@ -6,6 +6,24 @@
   is absent instead of raising. A host app embedding the package without that
   config no longer crashes on first call, and the test suite no longer fails
   depending on seed.
+- The zone SSL-mode check survives Cloudflare edge errors. It was the one call
+  that skipped the envelope check, so a 521 page raised `BadMapError` and
+  collapsed that domain's checkup result after its writes had already run.
+- Full-zone record listings are paginated (`per_page` sent explicitly,
+  `result_info.total_pages` followed). Inventory on a zone larger than one page
+  was partial: false "missing" records and undiscovered unmanaged ones.
+
+## ✨ Features
+
+- `DDNS_IPV4_LOOKUP_URLS` / `DDNS_IPV6_LOOKUP_URLS`: public-IP lookup providers
+  tried in order (defaults: icanhazip, then ipify), so one provider being down no
+  longer stops A/AAAA sync.
+
+## 🧹 Internal
+
+- Every Cloudflare and IP-lookup request carries explicit Req options: 10 s
+  receive timeout, 5 s connect timeout, at most 2 retries. Overridable with
+  `config :defdo_ddns, :cloudflare_req_options`.
 
 # 0.5.1
 

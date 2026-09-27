@@ -6,8 +6,31 @@ defmodule Defdo.Cloudflare.DDNS do
 
   @base_url "https://api.cloudflare.com/client/v4"
   @zone_endpoint @base_url <> "/zones"
-  @ipv4_lookup_url "https://ipv4.icanhazip.com"
-  @ipv6_lookup_url "https://ipv6.icanhazip.com"
+  @default_ipv4_lookup_urls ["https://ipv4.icanhazip.com", "https://api.ipify.org"]
+  @default_ipv6_lookup_urls ["https://ipv6.icanhazip.com", "https://api6.ipify.org"]
+
+  @default_req_options [
+    receive_timeout: 10_000,
+    connect_options: [timeout: 5_000],
+    max_retries: 2,
+    retry_log_level: :warning
+  ]
+
+  @page_size 5_000
+  @max_pages 100
+
+  @doc false
+  # Every outbound call goes through this. Req's implicit defaults are a 15 s
+  # receive timeout and 3 retries at 1/2/4 s — one degraded Cloudflare stretch
+  # could hold a monitor cycle for minutes. Overridable for tests and hosts via
+  # `config :defdo_ddns, :cloudflare_req_options, [...]`.
+  @spec req_options() :: keyword()
+  def req_options do
+    Keyword.merge(
+      @default_req_options,
+      Application.get_env(:defdo_ddns, :cloudflare_req_options, [])
+    )
+  end
 
   @doc """
   Backward compatible helper for public IPv4 retrieval.
@@ -33,11 +56,21 @@ defmodule Defdo.Cloudflare.DDNS do
     get_current_ip_family(:ipv6)
   end
 
-  defp get_current_ip_family(:ipv4), do: fetch_public_ip(@ipv4_lookup_url, :ipv4)
-  defp get_current_ip_family(:ipv6), do: fetch_public_ip(@ipv6_lookup_url, :ipv6)
+  # Providers are tried in order; one being down must not stop A/AAAA sync.
+  defp get_current_ip_family(family) do
+    family
+    |> lookup_urls()
+    |> Enum.find_value(&fetch_public_ip(&1, family))
+  end
+
+  defp lookup_urls(:ipv4),
+    do: get_cloudflare_key(:ipv4_lookup_urls, @default_ipv4_lookup_urls)
+
+  defp lookup_urls(:ipv6),
+    do: get_cloudflare_key(:ipv6_lookup_urls, @default_ipv6_lookup_urls)
 
   defp fetch_public_ip(url, family) when family in [:ipv4, :ipv6] do
-    case Req.get(url) do
+    case Req.get(url, req_options()) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         body
         |> to_string()
@@ -77,7 +110,10 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_id(bitstring) :: String.t() | nil
   def get_zone_id(domain) when is_bitstring(domain) do
-    Req.get(@zone_endpoint, headers: cf_auth_headers(), params: [name: domain])
+    Req.get(
+      @zone_endpoint,
+      [headers: cf_auth_headers(), params: [name: domain]] ++ req_options()
+    )
     |> decode_envelope("get_zone_id")
     |> case do
       {:ok, %{"result" => [zone | _]}} ->
@@ -121,17 +157,37 @@ defmodule Defdo.Cloudflare.DDNS do
   empty list as "every declared record is missing" and an edge error as "nothing
   is declared upstream", so a single transient Cloudflare 521 would otherwise
   manufacture a zone's worth of false conclusions.
+
+  Follows `result_info.total_pages`; returns every page or an error, never a
+  partial list.
   """
   @spec fetch_dns_records(String.t(), list()) :: {:ok, list()} | {:error, term()}
   def fetch_dns_records(zone_id, params \\ []) do
-    Req.get("#{@zone_endpoint}/#{zone_id}/dns_records",
-      headers: cf_auth_headers(),
-      params: params
+    params = Keyword.put_new(params, :per_page, @page_size)
+    fetch_dns_records_page(zone_id, params, 1, [])
+  end
+
+  defp fetch_dns_records_page(_zone_id, _params, page, _acc) when page > @max_pages do
+    Logger.error(
+      "Cloudflare list_dns_records: more than #{@max_pages} pages; refusing a partial answer"
+    )
+
+    {:error, :too_many_pages}
+  end
+
+  defp fetch_dns_records_page(zone_id, params, page, acc) do
+    Req.get(
+      "#{@zone_endpoint}/#{zone_id}/dns_records",
+      [headers: cf_auth_headers(), params: Keyword.put(params, :page, page)] ++ req_options()
     )
     |> decode_envelope("list_dns_records")
     |> case do
-      {:ok, %{"result" => result}} when is_list(result) ->
-        {:ok, result}
+      {:ok, %{"result" => result} = body} when is_list(result) ->
+        if more_pages?(body, page) do
+          fetch_dns_records_page(zone_id, params, page + 1, [result | acc])
+        else
+          {:ok, [result | acc] |> Enum.reverse() |> Enum.concat()}
+        end
 
       {:ok, body} ->
         log_api_error("list_dns_records", body)
@@ -142,6 +198,14 @@ defmodule Defdo.Cloudflare.DDNS do
         {:error, :listing_failed}
     end
   end
+
+  # `result_info` is optional in practice; without it there is no evidence of
+  # another page, so stop.
+  defp more_pages?(%{"result_info" => %{"total_pages" => total}}, page)
+       when is_integer(total),
+       do: page < total
+
+  defp more_pages?(_body, _page), do: false
 
   @doc """
   Retrieve current SSL mode configured in Cloudflare for a zone.
@@ -154,32 +218,24 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_ssl_mode(String.t()) :: String.t() | nil
   def get_zone_ssl_mode(zone_id) do
-    case Req.get(
-           "#{@zone_endpoint}/#{zone_id}/settings/ssl",
-           headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]
-         ) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        case body do
-          %{"success" => true, "result" => %{"value" => ssl_mode}} when is_binary(ssl_mode) ->
-            ssl_mode
+    Req.get(
+      "#{@zone_endpoint}/#{zone_id}/settings/ssl",
+      [headers: cf_auth_headers()] ++ req_options()
+    )
+    |> decode_envelope("get_zone_ssl_mode")
+    |> case do
+      {:ok, %{"success" => true, "result" => %{"value" => ssl_mode}}} when is_binary(ssl_mode) ->
+        ssl_mode
 
-          _ ->
-            errors = Map.get(body, "errors", [])
+      {:ok, body} ->
+        Logger.warning(
+          "Cloudflare get_zone_ssl_mode: unexpected response #{inspect(Map.get(body, "errors", []))}"
+        )
 
-            Logger.warning(
-              "Cloudflare SSL mode check returned unexpected response: #{inspect(errors)}"
-            )
-
-            nil
-        end
-
-      {:ok, %Req.Response{body: body}} ->
-        errors = Map.get(body, "errors", [])
-        Logger.warning("Cloudflare SSL mode check failed: #{inspect(errors)}")
         nil
 
-      {:error, reason} ->
-        Logger.warning("Cloudflare SSL mode check failed: #{inspect(reason)}")
+      {:error, message} ->
+        Logger.warning(message)
         nil
     end
   end
@@ -189,9 +245,9 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec apply_update(String.t(), {String.t(), String.t()}) :: tuple()
   def apply_update(zone_id, {record_id, body}) when is_bitstring(body) do
-    Req.put("#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
-      headers: cf_auth_headers(),
-      body: body
+    Req.put(
+      "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
+      [headers: cf_auth_headers(), body: body] ++ req_options()
     )
     |> decode_envelope("apply_update")
     |> handle_write_result("apply_update")
@@ -210,9 +266,9 @@ defmodule Defdo.Cloudflare.DDNS do
 
     record_with_comment = Map.put(record_data, "comment", comment)
 
-    Req.post("#{@zone_endpoint}/#{zone_id}/dns_records",
-      headers: cf_auth_headers(),
-      body: Jason.encode!(record_with_comment)
+    Req.post(
+      "#{@zone_endpoint}/#{zone_id}/dns_records",
+      [headers: cf_auth_headers(), body: Jason.encode!(record_with_comment)] ++ req_options()
     )
     |> decode_envelope("create_dns_record")
     |> handle_write_result("create_dns_record")

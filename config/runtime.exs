@@ -24,7 +24,17 @@ config :defdo_ddns, Cloudflare,
     Defdo.ConfigHelper.parse_boolean_env("AUTO_CREATE_DNS_RECORDS", false),
   proxy_a_records: Defdo.ConfigHelper.parse_boolean_env("CLOUDFLARE_PROXY_A_RECORDS", false),
   proxy_exclude: Defdo.ConfigHelper.parse_list_env("CLOUDFLARE_PROXY_EXCLUDE", []),
-  cname_records: Defdo.ConfigHelper.parse_json_env("CLOUDFLARE_CNAME_RECORDS_JSON", [])
+  cname_records: Defdo.ConfigHelper.parse_json_env("CLOUDFLARE_CNAME_RECORDS_JSON", []),
+  ipv4_lookup_urls:
+    Defdo.ConfigHelper.parse_list_env("DDNS_IPV4_LOOKUP_URLS", [
+      "https://ipv4.icanhazip.com",
+      "https://api.ipify.org"
+    ]),
+  ipv6_lookup_urls:
+    Defdo.ConfigHelper.parse_list_env("DDNS_IPV6_LOOKUP_URLS", [
+      "https://ipv6.icanhazip.com",
+      "https://api6.ipify.org"
+    ])
 
 config :defdo_ddns, Defdo.DDNS.RecordStore,
   module: Defdo.DDNS.RecordStores.FileEtsStore,

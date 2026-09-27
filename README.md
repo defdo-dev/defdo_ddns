@@ -126,6 +126,8 @@ Checkup completed
 | `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | Legacy seed JSON for managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
 | `DDNS_ENABLE_MONITOR` | ❌ No | `true`** | Enable/disable background monitor process |
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
+| `DDNS_IPV4_LOOKUP_URLS` | ❌ No | `https://ipv4.icanhazip.com,https://api.ipify.org` | Public IPv4 lookup providers, tried in order until one answers |
+| `DDNS_IPV6_LOOKUP_URLS` | ❌ No | `https://ipv6.icanhazip.com,https://api6.ipify.org` | Public IPv6 lookup providers, tried in order until one answers |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
 | `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
 | `DDNS_API_TOKEN` | ⚠️ Conditional*** | - | Global API token fallback (single-client mode) |
