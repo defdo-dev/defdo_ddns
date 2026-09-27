@@ -131,6 +131,9 @@ Checkup completed
 | `DDNS_IPV6_LOOKUP_URLS` | ❌ No | `https://ipv6.icanhazip.com,https://api6.ipify.org` | Public IPv6 lookup providers, tried in order until one answers |
 | `DDNS_READY_MAX_CONSECUTIVE_FAILURES` | ❌ No | `3` | `/ready` turns 503 after this many failed monitor cycles in a row |
 | `DDNS_READY_STALE_FACTOR` | ❌ No | `3` | `/ready` turns 503 when the last successful cycle is older than this × `DDNS_REFETCH_EVERY_MS` |
+| `DDNS_HEARTBEAT_URL` | ❌ No | unset (off) | Heartbeat ping URL (e.g. a defdo_status heartbeat). **Credential** — carries the receiver's token; never logged |
+| `DDNS_HEARTBEAT_TIMEOUT_MS` | ❌ No | `5000` | Heartbeat request timeout |
+| `DDNS_HEARTBEAT_ON_DEGRADED` | ❌ No | `true` | Also ping after cycles where some domains had errors |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
 | `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
 | `DDNS_API_TOKEN` | ⚠️ Conditional*** | - | Global API token fallback (single-client mode) |
@@ -247,6 +250,22 @@ tokens.
   [:defdo_ddns, :http, :request, :stop]
 ], &MyApp.Metrics.handle_event/4, nil)
 ```
+
+### Heartbeat
+
+With `DDNS_HEARTBEAT_URL` set, the monitor sends one GET to it after each
+finished cycle, so the receiver can alert when pings stop:
+
+- cycle `ok` → ping;
+- cycle `degraded` (some domains had errors) → ping, unless
+  `DDNS_HEARTBEAT_ON_DEGRADED=false`;
+- cycle `failed` (nothing could be processed) → **no ping**. A DDNS that cannot
+  converge goes silent on purpose.
+
+A slow or failing receiver never delays a cycle by more than
+`DDNS_HEARTBEAT_TIMEOUT_MS` and never affects DNS. On the receiver, use a
+period slightly longer than `DDNS_REFETCH_EVERY_MS` (e.g. 12 minutes for the
+5-minute default).
 
 ### Optional HTTP API (Bandit)
 

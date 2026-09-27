@@ -60,6 +60,11 @@ config :defdo_ddns, Defdo.DDNS.Health,
     Defdo.ConfigHelper.parse_integer_env("DDNS_READY_MAX_CONSECUTIVE_FAILURES", 3, min: 1),
   stale_factor: Defdo.ConfigHelper.parse_integer_env("DDNS_READY_STALE_FACTOR", 3, min: 2)
 
+config :defdo_ddns, Defdo.DDNS.Heartbeat,
+  url: System.get_env("DDNS_HEARTBEAT_URL"),
+  timeout_ms: Defdo.ConfigHelper.parse_integer_env("DDNS_HEARTBEAT_TIMEOUT_MS", 5_000, min: 250),
+  send_on_degraded: Defdo.ConfigHelper.parse_boolean_env("DDNS_HEARTBEAT_ON_DEGRADED", true)
+
 config :defdo_ddns, Defdo.DDNS.API,
   enabled: Defdo.ConfigHelper.parse_boolean_env("DDNS_API_ENABLED", false),
   port: api_port,

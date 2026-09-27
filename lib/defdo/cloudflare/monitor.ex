@@ -6,6 +6,7 @@ defmodule Defdo.Cloudflare.Monitor do
   import Defdo.Cloudflare.DDNS
   use GenServer
 
+  alias Defdo.DDNS.Heartbeat
   alias Defdo.DDNS.Intent
 
   # Last-cycle status lives in ETS owned by this process: a GenServer call
@@ -33,6 +34,10 @@ defmodule Defdo.Cloudflare.Monitor do
          "refetch_every_ms" => state.refetch_every
        }}
     )
+
+    unless Heartbeat.enabled?() do
+      Logger.info("DDNS heartbeat disabled (DDNS_HEARTBEAT_URL unset)")
+    end
 
     {:ok, state, {:continue, :start_monitor}}
   end
@@ -135,6 +140,11 @@ defmodule Defdo.Cloudflare.Monitor do
          "refetch_every_ms" => state.refetch_every
        }}
     )
+
+    # After the status row: the heartbeat reports a finished cycle, never a
+    # live process. "failed" cycles send nothing, so a DDNS that cannot
+    # converge goes silent and the receiver raises heartbeat_missed.
+    Heartbeat.ping(outcome)
 
     lines
   end

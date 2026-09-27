@@ -40,6 +40,10 @@
 
 ## ✨ Features
 
+- Heartbeat: with `DDNS_HEARTBEAT_URL` set, one ping after each `ok` (and, by
+  default, `degraded`) cycle and none after `failed` ones, so a DDNS that stops
+  converging goes silent and the receiver alerts. Bounded by
+  `DDNS_HEARTBEAT_TIMEOUT_MS`; the URL is never logged.
 - `:telemetry` span events: `[:defdo_ddns, :cycle, ...]` per monitor cycle
   (outcome, domains, consecutive failures) and `[:defdo_ddns, :http, :request, ...]`
   per outbound request (service, operation, result, status). No hostnames,
