@@ -247,18 +247,62 @@ defmodule Defdo.DDNS.DesiredStateStore do
       to_string(a["domain"]) == to_string(b["domain"])
   end
 
-  @doc "Counts and metadata only — never hostnames, targets or flag values."
+  @doc """
+  Counts and metadata only — never hostnames, targets or flag values.
+
+  Read-only: unlike `load/0` it never seeds a missing file, so a status or
+  readiness request cannot write to disk. A missing file that the environment
+  can seed reports `"state" => "pending_seed"` (the next monitor cycle writes it).
+  """
   @spec status() :: map()
   def status do
-    case load() do
+    case read() do
       {:ok, doc} ->
         Map.merge(%{"state" => "loaded", "path" => path()}, DesiredState.safe_summary(doc))
 
       {:error, :disabled} ->
         %{"state" => "disabled"}
 
+      {:error, :pending_seed} ->
+        %{"state" => "pending_seed", "path" => path()}
+
       {:error, reason} ->
         %{"state" => "error", "path" => path(), "reason" => inspect(reason)}
+    end
+  end
+
+  @doc """
+  Whether desired state is usable, without side effects: `:ok` when disabled,
+  when the file decodes, or when it is missing but seedable from env.
+  """
+  @spec check() :: :ok | {:error, term()}
+  def check do
+    case read() do
+      {:ok, _doc} -> :ok
+      {:error, :disabled} -> :ok
+      {:error, :pending_seed} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp read do
+    case path() do
+      nil ->
+        {:error, :disabled}
+
+      file ->
+        case File.read(file) do
+          {:ok, binary} ->
+            DesiredState.decode(binary)
+
+          {:error, :enoent} ->
+            if env_seedable?(),
+              do: {:error, :pending_seed},
+              else: {:error, :missing_desired_state}
+
+          {:error, reason} ->
+            {:error, {:desired_state_unreadable, reason}}
+        end
     end
   end
 

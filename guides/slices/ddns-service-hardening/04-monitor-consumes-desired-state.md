@@ -149,17 +149,17 @@ Extract, do not duplicate. Each old function becomes a thin wrapper.
    `Intent.domains/1` folds `Example.com` into `example.com`; an exact match
    would silently drop that CNAME.
 
-6. **Keep the inherited proxy default when intent moves into the file.** In
-   env mode a CNAME without `proxied` inherits `proxy_a_records`
-   (`normalize_cname_records/3`'s `default_proxied`). `Defdo.DDNS.DesiredState.new/2`
-   canonicalized a missing `proxied` to `false`, so seeding the file from env
-   flipped those CNAMEs to DNS-only / TTL 300 on the next cycle. In
-   `desired_state.ex`, compute
-   `default_proxied = boolean(Map.get(cloudflare, "proxy_a_records"), false)`
-   in `new/2` and pass it to `normalize_cname_records/2` →
-   `normalize_cname_record/2`, using it as the `boolean(get.("proxied"), default_proxied)`
-   default. In `DesiredStateStore.entry_for/1`, write `"proxied" => record["proxied"]`
-   (nil allowed) instead of `record["proxied"] || false`.
+6. **Resolve the inherited proxy default at read time.** In env mode a CNAME
+   without `proxied` inherits `proxy_a_records` (`normalize_cname_records/3`'s
+   `default_proxied`). `Defdo.DDNS.DesiredState` canonicalized a missing
+   `proxied` to `false`, which flipped those CNAMEs to DNS-only once the file
+   became live; baking `proxy_a_records` in instead would freeze today's value
+   (a later policy change would not apply). In `desired_state.ex`
+   `normalize_cname_record/1`, use `boolean(get.("proxied"), nil)` and drop
+   nil values (`Map.reject(fn {_k, v} -> is_nil(v) end)`) so the key is absent;
+   `Intent.cname_records/2` then resolves it against the document's
+   `proxy_a_records` on every read. In `DesiredStateStore.entry_for/1`, write
+   `"proxied" => record["proxied"]` (nil allowed).
 
 ## Step 2 — Create `Defdo.DDNS.Intent`
 
@@ -196,8 +196,8 @@ defmodule Defdo.DDNS.Intent do
   def from_env do
     %{
       "source" => "env",
-      "domain_mappings" => map_or_empty(DDNS.get_cloudflare_key(:domain_mappings, %{})),
-      "aaaa_domain_mappings" => map_or_empty(DDNS.get_cloudflare_key(:aaaa_domain_mappings, %{})),
+      "domain_mappings" => mappings(DDNS.get_cloudflare_key(:domain_mappings, %{})),
+      "aaaa_domain_mappings" => mappings(DDNS.get_cloudflare_key(:aaaa_domain_mappings, %{})),
       "cname_records" => RecordStore.records(),
       "auto_create_missing_records" => DDNS.get_cloudflare_key(:auto_create_missing_records, false) == true,
       "proxy_a_records" => DDNS.get_cloudflare_key(:proxy_a_records, false) == true,
@@ -209,8 +209,8 @@ defmodule Defdo.DDNS.Intent do
   def from_desired_state(%{"cloudflare" => cf}) do
     %{
       "source" => "desired_state",
-      "domain_mappings" => Map.get(cf, "domain_mappings", %{}),
-      "aaaa_domain_mappings" => Map.get(cf, "aaaa_domain_mappings", %{}),
+      "domain_mappings" => mappings(Map.get(cf, "domain_mappings", %{})),
+      "aaaa_domain_mappings" => mappings(Map.get(cf, "aaaa_domain_mappings", %{})),
       # File entries carry no "type"; the normalizer filters on it.
       "cname_records" => Enum.map(Map.get(cf, "cname_records", []), &Map.put(&1, "type", "CNAME")),
       "auto_create_missing_records" => Map.get(cf, "auto_create_missing_records", false),
@@ -226,17 +226,18 @@ defmodule Defdo.DDNS.Intent do
       intent["cname_records"]
       |> Enum.map(&(Map.get(&1, "domain") || Map.get(&1, :domain)))
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.map(&String.downcase/1)
 
-    # Case-insensitive; mapping keys first so their spelling wins (hostnames/3
-    # looks mappings up by exact key).
+    # DNS names are case-insensitive: mapping keys were lowercased (and merged)
+    # when the intent was built.
     (Map.keys(intent["domain_mappings"]) ++ Map.keys(intent["aaaa_domain_mappings"]) ++ cname_domains)
-    |> Enum.uniq_by(&String.downcase/1)
+    |> Enum.uniq()
     |> Enum.sort()
   end
 
   @spec hostnames(t(), String.t(), :a | :aaaa) :: [String.t()]
   def hostnames(intent, domain, family) do
-    case Map.fetch(intent[mapping_key(family)], domain) do
+    case Map.fetch(intent[mapping_key(family)], String.downcase(domain)) do
       {:ok, subdomains} when is_list(subdomains) -> DDNS.expand_hostnames(domain, subdomains)
       _ -> []
     end
@@ -255,8 +256,17 @@ defmodule Defdo.DDNS.Intent do
   defp mapping_key(:a), do: "domain_mappings"
   defp mapping_key(:aaaa), do: "aaaa_domain_mappings"
 
-  defp map_or_empty(value) when is_map(value), do: value
-  defp map_or_empty(_value), do: %{}
+  # Lowercase keys; entries differing only in case merge. Without this a
+  # mixed-case AAAA key was silently never synced.
+  defp mappings(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {domain, hosts}, acc ->
+      Map.update(acc, domain |> to_string() |> String.downcase(), List.wrap(hosts), fn existing ->
+        Enum.uniq(existing ++ List.wrap(hosts))
+      end)
+    end)
+  end
+
+  defp mappings(_value), do: %{}
 end
 ```
 
@@ -404,6 +414,12 @@ mutation (run it once):
 - `"auto-created A records use the proxy policy"` — empty listing,
   `proxy_a_records: true`, auto-create → one POST `A example.com proxied: true ttl: 1`.
   Mutation: `ctx.proxied` forced to `false`.
+- `"mixed-case A and AAAA keys are one zone and both sync"` (ddns_intent_test) —
+  A key `example.com`, AAAA key `Example.com` → one domain, both hostname sets.
+  Mutation: `mappings/1` without `String.downcase/1`.
+- `"an unset CNAME proxied follows proxy_a_records at read time"` (ddns_intent_test) —
+  stored entry has no `"proxied"` key; flipping `proxy_a_records` flips the
+  resolved value. Mutation: `boolean(get.("proxied"), false)`.
 - `"a seeded CNAME keeps the inherited proxy default"` — no file; env
   `proxy_a_records: true` and a CNAME with no `proxied`; first cycle seeds the
   file → POST `CNAME app.example.com proxied: true ttl: 1`. Mutation: the

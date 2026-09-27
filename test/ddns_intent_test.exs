@@ -97,6 +97,33 @@ defmodule Defdo.DDNS.IntentTest do
     assert [%{"name" => "app.example.com"}] = Intent.cname_records(intent, "example.com")
   end
 
+  test "mixed-case A and AAAA keys are one zone and both sync", %{state_path: file} do
+    write_file(file, %{
+      "domain_mappings" => %{"example.com" => ["www"]},
+      "aaaa_domain_mappings" => %{"Example.com" => ["v6"]}
+    })
+
+    assert {:ok, intent} = Intent.load()
+    assert Intent.domains(intent) == ["example.com"]
+    assert Intent.hostnames(intent, "example.com", :a) == ["example.com", "www.example.com"]
+    assert Intent.hostnames(intent, "example.com", :aaaa) == ["example.com", "v6.example.com"]
+  end
+
+  test "an unset CNAME proxied follows proxy_a_records at read time", %{state_path: file} do
+    cname = %{"domain" => "example.com", "name" => "app", "target" => "@"}
+    write_file(file, %{"proxy_a_records" => true, "cname_records" => [cname]})
+
+    assert {:ok, doc} = DesiredStateStore.load()
+    # Stored without a baked-in value, so a later policy change still applies.
+    refute Map.has_key?(hd(doc["cloudflare"]["cname_records"]), "proxied")
+    assert {:ok, intent} = Intent.load()
+    assert [%{"proxied" => true, "ttl" => 1}] = Intent.cname_records(intent, "example.com")
+
+    write_file(file, %{"proxy_a_records" => false, "cname_records" => [cname]})
+    assert {:ok, intent} = Intent.load()
+    assert [%{"proxied" => false, "ttl" => 300}] = Intent.cname_records(intent, "example.com")
+  end
+
   test "file cname entries normalize like store records", %{state_path: file} do
     write_file(file, %{
       "cname_records" => [

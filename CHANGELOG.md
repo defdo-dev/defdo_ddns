@@ -1,5 +1,16 @@
 # Unreleased
 
+## ⚠️ Upgrade notes
+
+- **Desired-state files seeded by 0.4.0–0.5.1.** This is the first release in
+  which the monitor converges `DDNS_DESIRED_STATE_PATH`. Files seeded by those
+  versions wrote `"proxied": false` on every CNAME that had no explicit value,
+  including ones that inherited `CLOUDFLARE_PROXY_A_RECORDS=true`. Before
+  upgrading a deployment that has this path set, remove `"proxied"` from those
+  entries (they will inherit `proxy_a_records` again) or set it explicitly —
+  otherwise the first cycle converges them to DNS-only, TTL 300. Deployments
+  without the path set are unaffected.
+
 ## 🐞 Fixes
 
 - `get_cloudflare_key/2` returns its default when `config :defdo_ddns, Cloudflare`
@@ -24,12 +35,15 @@
   file but never converged, and accepted records kept showing as unmanaged.
   Domains that appear only in CNAME declarations are now processed too. A
   malformed file skips the cycle; it never falls back to env.
-- A CNAME without an explicit `proxied` keeps inheriting `proxy_a_records`
-  when intent moves into the desired-state file. Seeding used to write
-  `proxied: false`, so switching a deployment to the file would have flipped
-  those records to DNS-only.
-- CNAME `domain` values are matched to zones case-insensitively
-  (`Example.com` and `example.com` are one zone, processed once).
+- A CNAME without an explicit `proxied` inherits `proxy_a_records` in the
+  desired-state file too, resolved on every read: the file stores no value for
+  it, so changing `proxy_a_records` later still applies. Seeding used to write
+  `proxied: false` (see the upgrade note).
+- Domains are matched case-insensitively: mapping keys and CNAME `domain`
+  values that differ only in case are one zone, processed once, and all their
+  hostnames sync.
+- `/ready` and `/v1/status` never write: they no longer seed a missing
+  desired-state file (reported as `pending_seed`).
 
 - A failed record listing no longer triggers auto-create. The monitor read a
   failed listing as "record absent", so with `AUTO_CREATE_DNS_RECORDS=true` one

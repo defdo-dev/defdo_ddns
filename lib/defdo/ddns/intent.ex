@@ -30,8 +30,8 @@ defmodule Defdo.DDNS.Intent do
   def from_env do
     %{
       "source" => "env",
-      "domain_mappings" => map_or_empty(DDNS.get_cloudflare_key(:domain_mappings, %{})),
-      "aaaa_domain_mappings" => map_or_empty(DDNS.get_cloudflare_key(:aaaa_domain_mappings, %{})),
+      "domain_mappings" => mappings(DDNS.get_cloudflare_key(:domain_mappings, %{})),
+      "aaaa_domain_mappings" => mappings(DDNS.get_cloudflare_key(:aaaa_domain_mappings, %{})),
       "cname_records" => RecordStore.records(),
       "auto_create_missing_records" =>
         DDNS.get_cloudflare_key(:auto_create_missing_records, false) == true,
@@ -45,8 +45,8 @@ defmodule Defdo.DDNS.Intent do
   def from_desired_state(%{"cloudflare" => cf}) do
     %{
       "source" => "desired_state",
-      "domain_mappings" => Map.get(cf, "domain_mappings", %{}),
-      "aaaa_domain_mappings" => Map.get(cf, "aaaa_domain_mappings", %{}),
+      "domain_mappings" => mappings(Map.get(cf, "domain_mappings", %{})),
+      "aaaa_domain_mappings" => mappings(Map.get(cf, "aaaa_domain_mappings", %{})),
       # File entries carry no "type"; the normalizer filters on it.
       "cname_records" =>
         cf |> Map.get("cname_records", []) |> Enum.map(&Map.put(&1, "type", "CNAME")),
@@ -68,20 +68,20 @@ defmodule Defdo.DDNS.Intent do
       intent["cname_records"]
       |> Enum.map(&(Map.get(&1, "domain") || Map.get(&1, :domain)))
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.map(&String.downcase/1)
 
-    # Case-insensitive: `Example.com` in a CNAME entry is the same zone as a
-    # mapping key `example.com`. Mapping keys come first so their spelling wins
-    # (hostnames/3 looks mappings up by that exact key).
+    # DNS names are case-insensitive: every domain is lowercase here, and
+    # mapping keys were lowercased (and merged) when the intent was built.
     (Map.keys(intent["domain_mappings"]) ++
        Map.keys(intent["aaaa_domain_mappings"]) ++ cname_domains)
-    |> Enum.uniq_by(&String.downcase/1)
+    |> Enum.uniq()
     |> Enum.sort()
   end
 
   @doc "Hostnames to keep on the public IP for `domain`, root included; `[]` if unmapped."
   @spec hostnames(t(), String.t(), :a | :aaaa) :: [String.t()]
   def hostnames(intent, domain, family) do
-    case Map.fetch(intent[mapping_key(family)], domain) do
+    case Map.fetch(intent[mapping_key(family)], String.downcase(domain)) do
       {:ok, subdomains} when is_list(subdomains) -> DDNS.expand_hostnames(domain, subdomains)
       _ -> []
     end
@@ -102,6 +102,16 @@ defmodule Defdo.DDNS.Intent do
   defp mapping_key(:a), do: "domain_mappings"
   defp mapping_key(:aaaa), do: "aaaa_domain_mappings"
 
-  defp map_or_empty(value) when is_map(value), do: value
-  defp map_or_empty(_value), do: %{}
+  # Lowercase keys; `Example.com` and `example.com` entries merge. Without
+  # this, a mixed-case AAAA key was silently never synced once domains were
+  # de-duplicated case-insensitively.
+  defp mappings(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {domain, hosts}, acc ->
+      Map.update(acc, domain |> to_string() |> String.downcase(), List.wrap(hosts), fn existing ->
+        Enum.uniq(existing ++ List.wrap(hosts))
+      end)
+    end)
+  end
+
+  defp mappings(_value), do: %{}
 end

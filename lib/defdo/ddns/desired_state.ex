@@ -57,15 +57,10 @@ defmodule Defdo.DDNS.DesiredState do
 
   def new(input, opts) when is_map(input) do
     cloudflare = Map.get(input, "cloudflare", input)
-    # A CNAME without an explicit `proxied` inherits `proxy_a_records`, exactly
-    # as env mode resolves it. Defaulting to false here silently flipped every
-    # such record to DNS-only the moment a deployment switched to the file.
-    default_proxied = boolean(Map.get(cloudflare, "proxy_a_records"), false)
 
     with {:ok, mappings} <- normalize_mappings(cloudflare, "domain_mappings"),
          {:ok, aaaa} <- normalize_mappings(cloudflare, "aaaa_domain_mappings"),
-         {:ok, cnames} <-
-           normalize_cname_records(Map.get(cloudflare, "cname_records", []), default_proxied),
+         {:ok, cnames} <- normalize_cname_records(Map.get(cloudflare, "cname_records", [])),
          {:ok, updated_at} <- resolve_updated_at(opts) do
       {:ok,
        %{
@@ -165,10 +160,10 @@ defmodule Defdo.DDNS.DesiredState do
     end
   end
 
-  defp normalize_cname_records(records, default_proxied) when is_list(records) do
+  defp normalize_cname_records(records) when is_list(records) do
     records
     |> Enum.reduce_while({:ok, []}, fn record, {:ok, acc} ->
-      case normalize_cname_record(record, default_proxied) do
+      case normalize_cname_record(record) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -182,10 +177,9 @@ defmodule Defdo.DDNS.DesiredState do
     end
   end
 
-  defp normalize_cname_records(other, _default_proxied),
-    do: {:error, {:invalid_cname_records, type_of(other)}}
+  defp normalize_cname_records(other), do: {:error, {:invalid_cname_records, type_of(other)}}
 
-  defp normalize_cname_record(record, default_proxied) when is_map(record) do
+  defp normalize_cname_record(record) when is_map(record) do
     get = fn key -> Map.get(record, key) || Map.get(record, String.to_existing_atom(key)) end
 
     name = trimmed(get.("name"))
@@ -204,15 +198,18 @@ defmodule Defdo.DDNS.DesiredState do
            "domain" => trimmed(get.("domain")) || "",
            "name" => name,
            "target" => target,
-           "proxied" => boolean(get.("proxied"), default_proxied),
+           # Absent means "inherit proxy_a_records", resolved when intent is
+           # read (Defdo.DDNS.Intent), exactly as env mode does. Baking a value
+           # in here would freeze today's default into every such record.
+           "proxied" => boolean(get.("proxied"), nil),
            "ttl" => ttl(get.("ttl"))
          }
-         |> Map.take(@cname_keys)}
+         |> Map.take(@cname_keys)
+         |> Map.reject(fn {_key, value} -> is_nil(value) end)}
     end
   end
 
-  defp normalize_cname_record(other, _default_proxied),
-    do: {:error, {:invalid_cname_record, type_of(other)}}
+  defp normalize_cname_record(other), do: {:error, {:invalid_cname_record, type_of(other)}}
 
   defp resolve_updated_at(opts) do
     case Keyword.get(opts, :updated_at) do

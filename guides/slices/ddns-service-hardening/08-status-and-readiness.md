@@ -80,7 +80,7 @@ defmodule Defdo.DDNS.Health do
   """
 
   alias Defdo.Cloudflare.Monitor
-  alias Defdo.DDNS.{Adoption, DesiredStateStore, Intent, RecordStore}
+  alias Defdo.DDNS.{Adoption, DesiredStateStore, RecordStore}
 
   @spec readiness(DateTime.t()) :: {:ready | :not_ready, [String.t()]}
   def readiness(now \\ DateTime.utc_now()) do
@@ -114,9 +114,10 @@ defmodule Defdo.DDNS.Health do
     end
   end
 
+  # Read-only check: a probe must never seed (write) the desired-state file.
   defp intent_reason do
-    case Intent.load() do
-      {:ok, _intent} -> nil
+    case DesiredStateStore.check() do
+      :ok -> nil
       {:error, _reason} -> "desired_state_unavailable"
     end
   end
@@ -192,6 +193,16 @@ Hot-path note: `readiness/1` runs per probe (K3s default every 10 s). It reads
 the desired-state file once and makes one GenServer call to the record store.
 That is acceptable; do **not** add caching.
 
+### Step 2b — Read-only desired-state status
+
+`Intent.load/0` → `DesiredStateStore.load/0` **seeds a missing file** when the
+environment can seed it — an unauthenticated probe must not write. Add to
+`DesiredStateStore` a private `read/0` (like `load/0` but returning
+`{:error, :pending_seed}` for a missing, seedable file instead of seeding), a
+public `check/0` (`:ok` for loaded, disabled or `:pending_seed`), and make
+`status/0` use `read/0` (reporting `"state" => "pending_seed"`). Health uses
+`check/0`, as shown above.
+
 ## Step 3 — Routes
 
 In `lib/defdo/ddns/api/router.ex`, after `get "/health"`:
@@ -255,6 +266,9 @@ CHANGELOG `# Unreleased` → `## ✨ Features`: `/ready` and `/v1/status`.
   → `"stale"` in reasons; `readiness(DateTime.utc_now())` → not.
 - `"broken desired-state file"` — write `"{"` to the configured path →
   `"desired_state_unavailable"`.
+- `"readiness never writes the desired-state file"` — path configured, file
+  absent, env seedable → `{:ready, []}` (monitor disabled), report shows
+  `pending_seed`, and the file still does not exist.
 - `"report carries no hostnames"` — with a healthy cycle for `example.com`
   and a desired-state file declaring `secret-host.example.com`, assert
   `Jason.encode!(Health.report())` contains neither `"example.com"` nor `"203.0.113."`.

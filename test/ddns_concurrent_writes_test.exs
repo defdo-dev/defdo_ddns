@@ -161,6 +161,62 @@ defmodule Defdo.DDNS.ConcurrentWritesTest do
     assert Enum.any?(doc["cloudflare"]["cname_records"], &(&1["name"] == "late.example.com"))
   end
 
+  test "a failed accept does not reset a decision made meanwhile" do
+    # Sequence: accept decides (adoption lock released), then waits on the
+    # desired-state lock we hold; meanwhile the entry is decided by someone
+    # else; the desired-state file is malformed, so promotion fails and accept
+    # rolls back. The rollback must leave the other decision alone.
+    id = "cname:guard.example.com"
+
+    File.write!(
+      Adoption.path(),
+      Jason.encode!(%{
+        "entries" => %{
+          id => %{
+            "id" => id,
+            "state" => "pending",
+            "record" => %{"type" => "CNAME", "name" => "guard.example.com"},
+            "first_seen" => "2026-01-01T00:00:00Z",
+            "decided_at" => nil,
+            "decided_by" => nil,
+            "note" => nil
+          }
+        }
+      })
+    )
+
+    desired = DesiredStateStore.path()
+    File.write!(desired, "{")
+    test_pid = self()
+
+    holder =
+      Task.async(fn ->
+        FileLock.with_lock(desired, fn ->
+          send(test_pid, :holding)
+
+          receive do
+            :release -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :holding, 1_000
+    accepter = Task.async(fn -> Adoption.accept(id, %{"by" => "api"}) end)
+    Process.sleep(100)
+
+    # Someone else's decision lands while accept waits to promote.
+    {:ok, raw} = File.read(Adoption.path())
+    entries = Jason.decode!(raw)["entries"]
+    manual = Map.merge(entries[id], %{"state" => "rejected", "note" => "manual"})
+    File.write!(Adoption.path(), Jason.encode!(%{"entries" => Map.put(entries, id, manual)}))
+
+    send(holder.pid, :release)
+    Task.await(holder, 5_000)
+
+    assert {:error, {:promotion_failed, _}} = Task.await(accepter, 5_000)
+    assert %{"state" => "rejected", "note" => "manual"} = Adoption.get(id)
+  end
+
   test "the lock excludes concurrent holders", %{dir: dir} do
     path = Path.join(dir, "lock-target")
     inside = :counters.new(1, [])

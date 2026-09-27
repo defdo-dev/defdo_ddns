@@ -8,7 +8,7 @@ defmodule Defdo.DDNS.Health do
   """
 
   alias Defdo.Cloudflare.Monitor
-  alias Defdo.DDNS.{Adoption, DesiredStateStore, Intent, RecordStore}
+  alias Defdo.DDNS.{Adoption, DesiredStateStore, RecordStore}
 
   @spec readiness(DateTime.t()) :: {:ready | :not_ready, [String.t()]}
   def readiness(now \\ DateTime.utc_now()) do
@@ -42,9 +42,10 @@ defmodule Defdo.DDNS.Health do
     end
   end
 
+  # Read-only check: a probe must never seed (write) the desired-state file.
   defp intent_reason do
-    case Intent.load() do
-      {:ok, _intent} -> nil
+    case DesiredStateStore.check() do
+      :ok -> nil
       {:error, _reason} -> "desired_state_unavailable"
     end
   end

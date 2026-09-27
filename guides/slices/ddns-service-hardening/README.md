@@ -122,3 +122,14 @@ Re-verified after the fixes: see the `fix(review)` commit.
 - Product scenarios P-01..P-04 over real HTTP against Bandit: pass
 - Invariant self-test: 3/3 failed under their violating edit (messages in the
   fe76a6b commit body)
+
+### Second review pass (re-review of fa69abd)
+
+| # | Missed | Why it was missed | Fix lives in |
+|---|---|---|---|
+| R1 | Case-insensitive domain de-dup dropped a mixed-case AAAA key | Fixed one comparison (de-dup) without following the value to its other consumer (exact-key lookup) | 04 Step 2 (`mappings/1`, lowercase lookup) |
+| R2 | Files seeded by 0.4.0–0.5.1 already carry `proxied: false` | A fix to canonicalization cannot reach data written before it; the author reasoned about new writes only | CHANGELOG upgrade note, README |
+| R3 | Inheritance resolved at write time froze the default | Chose "parity at seed" instead of asking when the operator can change the policy | 04 Step 1 item 6 |
+| R4 | `/ready` could seed (write) the file | Reused `load/0` on a probe path without checking its side effects | 08 Step 2b |
+| R5 | Rollback guard untested | Race guard written without a deterministic sequence test | 03 Tests (`"a failed accept does not reset a decision made meanwhile"`) |
+| — | `:global.trans` backoff made 30 writers exceed 5 s | Measured correctness, not latency under contention | 03 Step 1 |

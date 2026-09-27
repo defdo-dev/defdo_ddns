@@ -153,6 +153,17 @@ defmodule Defdo.DDNS.HealthTest do
     assert reasons() == ["desired_state_unavailable"]
   end
 
+  test "readiness never writes the desired-state file", %{dir: dir} do
+    # Missing file + seedable env: load/0 would seed it; a probe must not.
+    Application.put_env(:defdo_ddns, :monitor_enabled, false)
+    file = Path.join(dir, "desired_state.json")
+    Application.put_env(:defdo_ddns, DesiredStateStore, path: file)
+
+    assert Health.readiness() == {:ready, []}
+    assert %{"desired_state" => %{"state" => "pending_seed"}} = Health.report()
+    refute File.exists?(file)
+  end
+
   test "report carries no hostnames or addresses", %{dir: dir} do
     file = Path.join(dir, "desired_state.json")
     File.mkdir_p!(dir)

@@ -227,6 +227,10 @@ of environment variables and into one JSON file.
   the file.
 - Without the path, behaviour is unchanged: intent comes from the environment
   and the runtime record store.
+- A CNAME entry without `"proxied"` inherits `proxy_a_records` each time the
+  file is read. Files seeded by 0.4.0–0.5.1 wrote `"proxied": false` on such
+  entries; remove it where the record should inherit (see CHANGELOG upgrade
+  notes).
 
 ### Telemetry
 
