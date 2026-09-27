@@ -66,4 +66,28 @@ defmodule Defdo.DDNS.HardeningInvariantsTest do
 
     assert uses == 2, "only upsert and authorize_operator/1 may call authorize/1 (found #{uses})"
   end
+
+  test "status is operator-only and readiness has no auth (H08)" do
+    src = source!("lib/defdo/ddns/api/router.ex")
+    assert src =~ ~s(get "/ready")
+    assert [_, status_route] = String.split(src, ~s(get "/v1/status"), parts: 2)
+
+    body = status_route |> String.split("\n  end", parts: 2) |> hd()
+    assert body =~ "authorize_operator(conn)", "/v1/status must require the operator token"
+  end
+
+  test "every outbound request is instrumented (H09)" do
+    src = source!("lib/defdo/cloudflare/ddns.ex")
+    calls = ~r/Req\.(get|put|post)\(/ |> Regex.scan(src) |> length()
+    wraps = ~r/instrument\(:(cloudflare|ip_lookup)/ |> Regex.scan(src) |> length()
+
+    assert calls >= 6
+    assert wraps >= calls, "#{calls} Req calls but #{wraps} instrument/3 wrappers"
+  end
+
+  test "the heartbeat never logs its URL (H10)" do
+    src = source!("lib/defdo/ddns/heartbeat.ex")
+    refute src =~ ~r/Logger\.\w+\([^\n]*url/, "heartbeat.ex logs the URL"
+    refute src =~ "Exception.message", "exception messages can carry the URL"
+  end
 end

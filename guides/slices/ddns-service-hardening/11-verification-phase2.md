@@ -35,17 +35,38 @@ port (`{:ok, s} = :gen_tcp.listen(0, []); {:ok, port} = :inet.port(s); :gen_tcp.
 `start_supervised!({Bandit, plug: Defdo.DDNS.API.Router, scheme: :http, ip: {127, 0, 0, 1}, port: port})`,
 API env `token: "operator-secret"` plus one client, Cloudflare stubbed with
 `Req.Test` shared mode. The **test's own** HTTP client must not go through
-Req: `Req.default_options(plug: {Req.Test, ...})` would route the probe into
-the Cloudflare stub instead of the Bandit server. Use OTP's `:httpc`, which Req
-options do not touch:
+Req — `Req.default_options(plug: {Req.Test, ...})` would route the probe into
+the Cloudflare stub instead of the Bandit server — and `:httpc` is unavailable
+(`:inets` is not in this app's code path; calling it raises
+`UndefinedFunctionError ... :http_util`). Use a raw HTTP/1.1 client over
+`:gen_tcp` (kernel only):
 
 ```elixir
+  # Minimal HTTP/1.1 client over :gen_tcp (kernel only — :inets is not in this
+  # app's code path, and Req calls are routed into the Cloudflare stub).
   defp http_get(port, path, headers \\ []) do
-    :inets.start()
-    url = ~c"http://127.0.0.1:#{port}#{path}"
-    hdrs = Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
-    {:ok, {{_, status, _}, _h, body}} = :httpc.request(:get, {url, hdrs}, [], body_format: :binary)
-    {status, Jason.decode!(body)}
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false])
+    extra = Enum.map_join(headers, "", fn {k, v} -> "#{k}: #{v}\r\n" end)
+
+    :ok =
+      :gen_tcp.send(
+        socket,
+        "GET #{path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n#{extra}\r\n"
+      )
+
+    response = recv_all(socket, "")
+    :gen_tcp.close(socket)
+
+    [head, body] = String.split(response, "\r\n\r\n", parts: 2)
+    ["HTTP/1.1", status | _] = head |> String.split("\r\n") |> hd() |> String.split(" ")
+    {String.to_integer(status), Jason.decode!(body)}
+  end
+
+  defp recv_all(socket, acc) do
+    case :gen_tcp.recv(socket, 0, 5_000) do
+      {:ok, data} -> recv_all(socket, acc <> data)
+      {:error, :closed} -> acc
+    end
   end
 ```
 
