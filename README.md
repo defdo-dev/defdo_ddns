@@ -225,6 +225,29 @@ of environment variables and into one JSON file.
 - Without the path, behaviour is unchanged: intent comes from the environment
   and the runtime record store.
 
+### Telemetry
+
+DDNS emits `:telemetry` span events (`:start`, `:stop`, `:exception`). It
+attaches no handlers itself; wire them to your metrics sink. Metadata carries
+fixed strings, counts and status codes only — no hostnames, addresses, URLs or
+tokens.
+
+| Event | Measurements | Metadata |
+|---|---|---|
+| `[:defdo_ddns, :cycle, :stop]` | `duration` | `outcome` (`"ok"`/`"degraded"`/`"failed"`), `domains` (integer), `consecutive_failures` (integer) |
+| `[:defdo_ddns, :http, :request, :stop]` | `duration` | `service` (`:cloudflare` \| `:ip_lookup`), `operation` (string, below), `result` (`:ok` \| `:error`), `status` (integer HTTP status or `nil` on transport error) |
+
+`operation` values: `"get_zone_id"`, `"list_dns_records"` (one event per page),
+`"get_zone_ssl_mode"`, `"apply_update"`, `"create_dns_record"`, `"public_ip_ipv4"`,
+`"public_ip_ipv6"`. `duration` is in native time units.
+
+```elixir
+:telemetry.attach_many("ddns-metrics", [
+  [:defdo_ddns, :cycle, :stop],
+  [:defdo_ddns, :http, :request, :stop]
+], &MyApp.Metrics.handle_event/4, nil)
+```
+
 ### Optional HTTP API (Bandit)
 
 This project can expose a lightweight HTTP API using Bandit.

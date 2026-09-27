@@ -70,7 +70,7 @@ defmodule Defdo.Cloudflare.DDNS do
     do: get_cloudflare_key(:ipv6_lookup_urls, @default_ipv6_lookup_urls)
 
   defp fetch_public_ip(url, family) when family in [:ipv4, :ipv6] do
-    case Req.get(url, req_options()) do
+    case instrument(:ip_lookup, "public_ip_#{family}", fn -> Req.get(url, req_options()) end) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         body
         |> to_string()
@@ -110,10 +110,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_id(bitstring) :: String.t() | nil
   def get_zone_id(domain) when is_bitstring(domain) do
-    Req.get(
-      @zone_endpoint,
-      [headers: cf_auth_headers(), params: [name: domain]] ++ req_options()
-    )
+    instrument(:cloudflare, "get_zone_id", fn ->
+      Req.get(
+        @zone_endpoint,
+        [headers: cf_auth_headers(), params: [name: domain]] ++ req_options()
+      )
+    end)
     |> decode_envelope("get_zone_id")
     |> case do
       {:ok, %{"result" => [zone | _]}} ->
@@ -176,10 +178,12 @@ defmodule Defdo.Cloudflare.DDNS do
   end
 
   defp fetch_dns_records_page(zone_id, params, page, acc) do
-    Req.get(
-      "#{@zone_endpoint}/#{zone_id}/dns_records",
-      [headers: cf_auth_headers(), params: Keyword.put(params, :page, page)] ++ req_options()
-    )
+    instrument(:cloudflare, "list_dns_records", fn ->
+      Req.get(
+        "#{@zone_endpoint}/#{zone_id}/dns_records",
+        [headers: cf_auth_headers(), params: Keyword.put(params, :page, page)] ++ req_options()
+      )
+    end)
     |> decode_envelope("list_dns_records")
     |> case do
       {:ok, %{"result" => result} = body} when is_list(result) ->
@@ -218,10 +222,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_ssl_mode(String.t()) :: String.t() | nil
   def get_zone_ssl_mode(zone_id) do
-    Req.get(
-      "#{@zone_endpoint}/#{zone_id}/settings/ssl",
-      [headers: cf_auth_headers()] ++ req_options()
-    )
+    instrument(:cloudflare, "get_zone_ssl_mode", fn ->
+      Req.get(
+        "#{@zone_endpoint}/#{zone_id}/settings/ssl",
+        [headers: cf_auth_headers()] ++ req_options()
+      )
+    end)
     |> decode_envelope("get_zone_ssl_mode")
     |> case do
       {:ok, %{"success" => true, "result" => %{"value" => ssl_mode}}} when is_binary(ssl_mode) ->
@@ -245,10 +251,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec apply_update(String.t(), {String.t(), String.t()}) :: tuple()
   def apply_update(zone_id, {record_id, body}) when is_bitstring(body) do
-    Req.put(
-      "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
-      [headers: cf_auth_headers(), body: body] ++ req_options()
-    )
+    instrument(:cloudflare, "apply_update", fn ->
+      Req.put(
+        "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
+        [headers: cf_auth_headers(), body: body] ++ req_options()
+      )
+    end)
     |> decode_envelope("apply_update")
     |> handle_write_result("apply_update")
   end
@@ -266,10 +274,12 @@ defmodule Defdo.Cloudflare.DDNS do
 
     record_with_comment = Map.put(record_data, "comment", comment)
 
-    Req.post(
-      "#{@zone_endpoint}/#{zone_id}/dns_records",
-      [headers: cf_auth_headers(), body: Jason.encode!(record_with_comment)] ++ req_options()
-    )
+    instrument(:cloudflare, "create_dns_record", fn ->
+      Req.post(
+        "#{@zone_endpoint}/#{zone_id}/dns_records",
+        [headers: cf_auth_headers(), body: Jason.encode!(record_with_comment)] ++ req_options()
+      )
+    end)
     |> decode_envelope("create_dns_record")
     |> handle_write_result("create_dns_record")
   end
@@ -282,6 +292,24 @@ defmodule Defdo.Cloudflare.DDNS do
   # call touches it: letting one raise killed the monitor, and because the
   # supervisor restarted it straight back into the same failing call, the whole
   # application shut down and stayed down.
+
+  # One telemetry span per outbound request. Metadata is fixed strings and
+  # status codes only: never URLs (the IP lookup URL is harmless, but the rule
+  # keeps credentials out wherever a URL might carry one).
+  defp instrument(service, operation, fun) do
+    meta = %{service: service, operation: operation}
+
+    :telemetry.span([:defdo_ddns, :http, :request], meta, fn ->
+      response = fun.()
+      {response, Map.merge(meta, response_meta(response))}
+    end)
+  end
+
+  defp response_meta({:ok, %Req.Response{status: status}}) when status in 200..299,
+    do: %{result: :ok, status: status}
+
+  defp response_meta({:ok, %Req.Response{status: status}}), do: %{result: :error, status: status}
+  defp response_meta({:error, _reason}), do: %{result: :error, status: nil}
 
   defp cf_auth_headers do
     [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]

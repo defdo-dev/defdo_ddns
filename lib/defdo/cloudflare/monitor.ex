@@ -102,10 +102,21 @@ defmodule Defdo.Cloudflare.Monitor do
   defp run_cycle(state) do
     started_at = DateTime.utc_now()
     started_mono = System.monotonic_time(:millisecond)
-    {outcome, lines} = execute_monitor()
-    finished_at = DateTime.utc_now() |> DateTime.to_iso8601()
-
     {:ok, previous} = status()
+
+    {outcome, lines} =
+      :telemetry.span([:defdo_ddns, :cycle], %{}, fn ->
+        {outcome, lines} = result = execute_monitor()
+
+        {result,
+         %{
+           outcome: outcome,
+           domains: length(lines),
+           consecutive_failures: next_failures(outcome, previous)
+         }}
+      end)
+
+    finished_at = DateTime.utc_now() |> DateTime.to_iso8601()
     failed? = outcome == "failed"
 
     :ets.insert(
@@ -117,7 +128,7 @@ defmodule Defdo.Cloudflare.Monitor do
          "finished_at" => finished_at,
          "duration_ms" => System.monotonic_time(:millisecond) - started_mono,
          "domains" => length(lines),
-         "consecutive_failures" => if(failed?, do: previous["consecutive_failures"] + 1, else: 0),
+         "consecutive_failures" => next_failures(outcome, previous),
          "last_success_at" => if(failed?, do: previous["last_success_at"], else: finished_at),
          "refetch_every_ms" => state.refetch_every
        }}
@@ -125,6 +136,9 @@ defmodule Defdo.Cloudflare.Monitor do
 
     lines
   end
+
+  defp next_failures("failed", previous), do: previous["consecutive_failures"] + 1
+  defp next_failures(_outcome, _previous), do: 0
 
   # Returns {cycle_outcome, lines}. `lines` is the public checkup shape: one
   # list of messages per domain, or a single error message.

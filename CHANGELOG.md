@@ -34,6 +34,11 @@
 
 ## ✨ Features
 
+- `:telemetry` span events: `[:defdo_ddns, :cycle, ...]` per monitor cycle
+  (outcome, domains, consecutive failures) and `[:defdo_ddns, :http, :request, ...]`
+  per outbound request (service, operation, result, status). No hostnames,
+  URLs or tokens in metadata. `telemetry` is now a declared dependency (it was
+  already locked through Req).
 - `GET /ready`: readiness probe (no auth) that turns 503 with reason codes when
   the record store or desired state is unavailable, the monitor is not running
   or still starting, cycles keep failing (`DDNS_READY_MAX_CONSECUTIVE_FAILURES`,
