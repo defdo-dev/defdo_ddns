@@ -133,3 +133,12 @@ Re-verified after the fixes: see the `fix(review)` commit.
 | R4 | `/ready` could seed (write) the file | Reused `load/0` on a probe path without checking its side effects | 08 Step 2b |
 | R5 | Rollback guard untested | Race guard written without a deterministic sequence test | 03 Tests (`"a failed accept does not reset a decision made meanwhile"`) |
 | — | `:global.trans` backoff made 30 writers exceed 5 s | Measured correctness, not latency under contention | 03 Step 1 |
+
+## Verified (after both review passes)
+
+- Commit: 878abfb
+- Environment: fresh `git clone`, `mix deps.get` from `mix.lock`, Elixir 1.19.5 / OTP 28, macOS arm64
+- format / unused-deps / `compile --warnings-as-errors`: clean
+- `mix test`: 273 tests, 0 failures on the default seed and seeds 0, 6, 8, 12345, 777; seed sweep 1–20: 0/20 failing
+- Every review fix was shown to fail its test under the matching mutation
+- Open item: R2 needs the owner to confirm whether any deployment on 0.4.0–0.5.1 set `DDNS_DESIRED_STATE_PATH` (upgrade note shipped either way)
