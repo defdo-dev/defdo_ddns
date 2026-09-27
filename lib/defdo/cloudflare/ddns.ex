@@ -6,8 +6,31 @@ defmodule Defdo.Cloudflare.DDNS do
 
   @base_url "https://api.cloudflare.com/client/v4"
   @zone_endpoint @base_url <> "/zones"
-  @ipv4_lookup_url "https://ipv4.icanhazip.com"
-  @ipv6_lookup_url "https://ipv6.icanhazip.com"
+  @default_ipv4_lookup_urls ["https://ipv4.icanhazip.com", "https://api.ipify.org"]
+  @default_ipv6_lookup_urls ["https://ipv6.icanhazip.com", "https://api6.ipify.org"]
+
+  @default_req_options [
+    receive_timeout: 10_000,
+    connect_options: [timeout: 5_000],
+    max_retries: 2,
+    retry_log_level: :warning
+  ]
+
+  @page_size 5_000
+  @max_pages 100
+
+  @doc false
+  # Every outbound call goes through this. Req's implicit defaults are a 15 s
+  # receive timeout and 3 retries at 1/2/4 s — one degraded Cloudflare stretch
+  # could hold a monitor cycle for minutes. Overridable for tests and hosts via
+  # `config :defdo_ddns, :cloudflare_req_options, [...]`.
+  @spec req_options() :: keyword()
+  def req_options do
+    Keyword.merge(
+      @default_req_options,
+      Application.get_env(:defdo_ddns, :cloudflare_req_options, [])
+    )
+  end
 
   @doc """
   Backward compatible helper for public IPv4 retrieval.
@@ -33,11 +56,21 @@ defmodule Defdo.Cloudflare.DDNS do
     get_current_ip_family(:ipv6)
   end
 
-  defp get_current_ip_family(:ipv4), do: fetch_public_ip(@ipv4_lookup_url, :ipv4)
-  defp get_current_ip_family(:ipv6), do: fetch_public_ip(@ipv6_lookup_url, :ipv6)
+  # Providers are tried in order; one being down must not stop A/AAAA sync.
+  defp get_current_ip_family(family) do
+    family
+    |> lookup_urls()
+    |> Enum.find_value(&fetch_public_ip(&1, family))
+  end
+
+  defp lookup_urls(:ipv4),
+    do: get_cloudflare_key(:ipv4_lookup_urls, @default_ipv4_lookup_urls)
+
+  defp lookup_urls(:ipv6),
+    do: get_cloudflare_key(:ipv6_lookup_urls, @default_ipv6_lookup_urls)
 
   defp fetch_public_ip(url, family) when family in [:ipv4, :ipv6] do
-    case Req.get(url) do
+    case instrument(:ip_lookup, "public_ip_#{family}", fn -> Req.get(url, req_options()) end) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         body
         |> to_string()
@@ -77,7 +110,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_id(bitstring) :: String.t() | nil
   def get_zone_id(domain) when is_bitstring(domain) do
-    Req.get(@zone_endpoint, headers: cf_auth_headers(), params: [name: domain])
+    instrument(:cloudflare, "get_zone_id", fn ->
+      Req.get(
+        @zone_endpoint,
+        [headers: cf_auth_headers(), params: [name: domain]] ++ req_options()
+      )
+    end)
     |> decode_envelope("get_zone_id")
     |> case do
       {:ok, %{"result" => [zone | _]}} ->
@@ -121,17 +159,39 @@ defmodule Defdo.Cloudflare.DDNS do
   empty list as "every declared record is missing" and an edge error as "nothing
   is declared upstream", so a single transient Cloudflare 521 would otherwise
   manufacture a zone's worth of false conclusions.
+
+  Follows `result_info.total_pages`; returns every page or an error, never a
+  partial list.
   """
   @spec fetch_dns_records(String.t(), list()) :: {:ok, list()} | {:error, term()}
   def fetch_dns_records(zone_id, params \\ []) do
-    Req.get("#{@zone_endpoint}/#{zone_id}/dns_records",
-      headers: cf_auth_headers(),
-      params: params
+    params = Keyword.put_new(params, :per_page, @page_size)
+    fetch_dns_records_page(zone_id, params, 1, [])
+  end
+
+  defp fetch_dns_records_page(_zone_id, _params, page, _acc) when page > @max_pages do
+    Logger.error(
+      "Cloudflare list_dns_records: more than #{@max_pages} pages; refusing a partial answer"
     )
+
+    {:error, :too_many_pages}
+  end
+
+  defp fetch_dns_records_page(zone_id, params, page, acc) do
+    instrument(:cloudflare, "list_dns_records", fn ->
+      Req.get(
+        "#{@zone_endpoint}/#{zone_id}/dns_records",
+        [headers: cf_auth_headers(), params: Keyword.put(params, :page, page)] ++ req_options()
+      )
+    end)
     |> decode_envelope("list_dns_records")
     |> case do
-      {:ok, %{"result" => result}} when is_list(result) ->
-        {:ok, result}
+      {:ok, %{"result" => result} = body} when is_list(result) ->
+        if more_pages?(body, page) do
+          fetch_dns_records_page(zone_id, params, page + 1, [result | acc])
+        else
+          {:ok, [result | acc] |> Enum.reverse() |> Enum.concat()}
+        end
 
       {:ok, body} ->
         log_api_error("list_dns_records", body)
@@ -142,6 +202,14 @@ defmodule Defdo.Cloudflare.DDNS do
         {:error, :listing_failed}
     end
   end
+
+  # `result_info` is optional in practice; without it there is no evidence of
+  # another page, so stop.
+  defp more_pages?(%{"result_info" => %{"total_pages" => total}}, page)
+       when is_integer(total),
+       do: page < total
+
+  defp more_pages?(_body, _page), do: false
 
   @doc """
   Retrieve current SSL mode configured in Cloudflare for a zone.
@@ -154,32 +222,26 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_zone_ssl_mode(String.t()) :: String.t() | nil
   def get_zone_ssl_mode(zone_id) do
-    case Req.get(
-           "#{@zone_endpoint}/#{zone_id}/settings/ssl",
-           headers: [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]
-         ) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        case body do
-          %{"success" => true, "result" => %{"value" => ssl_mode}} when is_binary(ssl_mode) ->
-            ssl_mode
+    instrument(:cloudflare, "get_zone_ssl_mode", fn ->
+      Req.get(
+        "#{@zone_endpoint}/#{zone_id}/settings/ssl",
+        [headers: cf_auth_headers()] ++ req_options()
+      )
+    end)
+    |> decode_envelope("get_zone_ssl_mode")
+    |> case do
+      {:ok, %{"success" => true, "result" => %{"value" => ssl_mode}}} when is_binary(ssl_mode) ->
+        ssl_mode
 
-          _ ->
-            errors = Map.get(body, "errors", [])
+      {:ok, body} ->
+        Logger.warning(
+          "Cloudflare get_zone_ssl_mode: unexpected response #{inspect(Map.get(body, "errors", []))}"
+        )
 
-            Logger.warning(
-              "Cloudflare SSL mode check returned unexpected response: #{inspect(errors)}"
-            )
-
-            nil
-        end
-
-      {:ok, %Req.Response{body: body}} ->
-        errors = Map.get(body, "errors", [])
-        Logger.warning("Cloudflare SSL mode check failed: #{inspect(errors)}")
         nil
 
-      {:error, reason} ->
-        Logger.warning("Cloudflare SSL mode check failed: #{inspect(reason)}")
+      {:error, message} ->
+        Logger.warning(message)
         nil
     end
   end
@@ -189,10 +251,12 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec apply_update(String.t(), {String.t(), String.t()}) :: tuple()
   def apply_update(zone_id, {record_id, body}) when is_bitstring(body) do
-    Req.put("#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
-      headers: cf_auth_headers(),
-      body: body
-    )
+    instrument(:cloudflare, "apply_update", fn ->
+      Req.put(
+        "#{@zone_endpoint}/#{zone_id}/dns_records/#{record_id}",
+        [headers: cf_auth_headers(), body: body] ++ req_options()
+      )
+    end)
     |> decode_envelope("apply_update")
     |> handle_write_result("apply_update")
   end
@@ -210,10 +274,12 @@ defmodule Defdo.Cloudflare.DDNS do
 
     record_with_comment = Map.put(record_data, "comment", comment)
 
-    Req.post("#{@zone_endpoint}/#{zone_id}/dns_records",
-      headers: cf_auth_headers(),
-      body: Jason.encode!(record_with_comment)
-    )
+    instrument(:cloudflare, "create_dns_record", fn ->
+      Req.post(
+        "#{@zone_endpoint}/#{zone_id}/dns_records",
+        [headers: cf_auth_headers(), body: Jason.encode!(record_with_comment)] ++ req_options()
+      )
+    end)
     |> decode_envelope("create_dns_record")
     |> handle_write_result("create_dns_record")
   end
@@ -226,6 +292,24 @@ defmodule Defdo.Cloudflare.DDNS do
   # call touches it: letting one raise killed the monitor, and because the
   # supervisor restarted it straight back into the same failing call, the whole
   # application shut down and stayed down.
+
+  # One telemetry span per outbound request. Metadata is fixed strings and
+  # status codes only: never URLs (the IP lookup URL is harmless, but the rule
+  # keeps credentials out wherever a URL might carry one).
+  defp instrument(service, operation, fun) do
+    meta = %{service: service, operation: operation}
+
+    :telemetry.span([:defdo_ddns, :http, :request], meta, fn ->
+      response = fun.()
+      {response, Map.merge(meta, response_meta(response))}
+    end)
+  end
+
+  defp response_meta({:ok, %Req.Response{status: status}}) when status in 200..299,
+    do: %{result: :ok, status: status}
+
+  defp response_meta({:ok, %Req.Response{status: status}}), do: %{result: :error, status: status}
+  defp response_meta({:error, _reason}), do: %{result: :error, status: nil}
 
   defp cf_auth_headers do
     [authorization: "Bearer #{get_cloudflare_key(:auth_token)}"]
@@ -284,18 +368,28 @@ defmodule Defdo.Cloudflare.DDNS do
   In fact this give the second parameter to execute the update.
   """
   @spec input_for_update_dns_records(list(), String.t() | map()) :: list()
-  def input_for_update_dns_records(records, local_ip) when is_binary(local_ip) do
-    input_for_update_dns_records(records, %{"A" => local_ip, "AAAA" => local_ip})
+  def input_for_update_dns_records(records, local_ips) do
+    input_for_update_dns_records(records, local_ips, env_proxy_opts())
   end
 
-  def input_for_update_dns_records(records, local_ips_by_type) when is_map(local_ips_by_type) do
+  @doc """
+  Same as `input_for_update_dns_records/2`, with the proxy policy passed in
+  instead of read from application env.
+  """
+  @spec input_for_update_dns_records(list(), String.t() | map(), proxy_opts()) :: list()
+  def input_for_update_dns_records(records, local_ip, opts) when is_binary(local_ip) do
+    input_for_update_dns_records(records, %{"A" => local_ip, "AAAA" => local_ip}, opts)
+  end
+
+  def input_for_update_dns_records(records, local_ips_by_type, opts)
+      when is_map(local_ips_by_type) do
     records
     |> Enum.group_by(&{&1["name"], &1["type"]})
     |> Enum.flat_map(fn {{name, type}, grouped_records} ->
       desired_ip = Map.get(local_ips_by_type, type)
 
       if is_binary(desired_ip) and desired_ip != "" do
-        {updates, skipped} = plan_updates_for_group(grouped_records, desired_ip)
+        {updates, skipped} = plan_updates_for_group(grouped_records, desired_ip, opts)
 
         if skipped != [] do
           skipped_ids = skipped_record_ids(skipped)
@@ -312,7 +406,7 @@ defmodule Defdo.Cloudflare.DDNS do
     end)
   end
 
-  def input_for_update_dns_records(_records, _local_ips_by_type), do: []
+  def input_for_update_dns_records(_records, _local_ips_by_type, _opts), do: []
 
   @doc """
   Check CNAME records that must be updated to match a desired record definition.
@@ -357,20 +451,25 @@ defmodule Defdo.Cloudflare.DDNS do
   except for hostnames matched by `CLOUDFLARE_PROXY_EXCLUDE`.
   """
   @spec resolve_proxied_value(map()) :: boolean()
-  def resolve_proxied_value(record) do
-    case get_cloudflare_key(:proxy_a_records, false) do
-      true ->
-        record_name = Map.get(record, "name", "")
+  def resolve_proxied_value(record), do: resolve_proxied_value(record, env_proxy_opts())
 
-        if proxy_excluded?(record_name) do
-          false
-        else
-          true
-        end
+  @spec resolve_proxied_value(map(), proxy_opts()) :: boolean()
+  def resolve_proxied_value(record, %{proxy_a_records: true, proxy_exclude: patterns}) do
+    not proxy_excluded?(Map.get(record, "name", ""), patterns)
+  end
 
-      false ->
-        Map.get(record, "proxied", false)
-    end
+  def resolve_proxied_value(record, _opts), do: Map.get(record, "proxied", false)
+
+  @typedoc "Proxy policy for A/AAAA planning."
+  @type proxy_opts :: %{proxy_a_records: boolean(), proxy_exclude: [String.t()]}
+
+  @doc "The proxy policy as configured in application env."
+  @spec env_proxy_opts() :: proxy_opts()
+  def env_proxy_opts do
+    %{
+      proxy_a_records: get_cloudflare_key(:proxy_a_records, false),
+      proxy_exclude: get_proxy_exclude_patterns()
+    }
   end
 
   @doc """
@@ -399,7 +498,13 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_proxy_exclude_patterns() :: list(String.t())
   def get_proxy_exclude_patterns do
-    get_cloudflare_key(:proxy_exclude, [])
+    normalize_proxy_exclude_patterns(get_cloudflare_key(:proxy_exclude, []))
+  end
+
+  @doc "Normalize a raw proxy-exclude value (list or comma/space string) into patterns."
+  @spec normalize_proxy_exclude_patterns(term()) :: list(String.t())
+  def normalize_proxy_exclude_patterns(value) do
+    value
     |> List.wrap()
     |> Enum.flat_map(fn
       value when is_binary(value) ->
@@ -536,15 +641,27 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_cname_records_for_domain(String.t()) :: list(map())
   def get_cname_records_for_domain(domain) when is_binary(domain) do
-    default_proxied = get_cloudflare_key(:proxy_a_records, false)
+    normalize_cname_records(
+      Defdo.DDNS.RecordStore.records(),
+      domain,
+      get_cloudflare_key(:proxy_a_records, false)
+    )
+  end
 
-    Defdo.DDNS.RecordStore.records()
+  def get_cname_records_for_domain(_domain), do: []
+
+  @doc """
+  Normalize raw CNAME definitions (record-store entries or desired-state file
+  entries) for one zone, as `get_cname_records_for_domain/1` returns them.
+  """
+  @spec normalize_cname_records(list(), String.t(), boolean()) :: list(map())
+  def normalize_cname_records(records, domain, default_proxied)
+      when is_list(records) and is_binary(domain) do
+    records
     |> Enum.filter(&(record_type(&1) == "CNAME"))
     |> Enum.flat_map(&normalize_cname_record_config(&1, domain, default_proxied))
     |> Enum.uniq_by(&{&1["name"], &1["content"], &1["proxied"], &1["ttl"]})
   end
-
-  def get_cname_records_for_domain(_domain), do: []
 
   @doc """
   Get subdomains specifically configured for a domain.
@@ -562,11 +679,21 @@ defmodule Defdo.Cloudflare.DDNS do
         []
 
       subdomains when is_list(subdomains) ->
-        subdomains
-        |> Enum.map(&normalize_subdomain(&1, domain))
-        |> Enum.reject(&(&1 == domain))
-        |> Enum.uniq()
+        domain |> expand_hostnames(subdomains) |> tl()
     end
+  end
+
+  @doc "Root domain plus normalized subdomains, as `records_to_monitor/2` returns them."
+  @spec expand_hostnames(String.t(), list()) :: [String.t()]
+  def expand_hostnames(domain, subdomains) when is_binary(domain) and is_list(subdomains) do
+    expanded =
+      subdomains
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&normalize_subdomain(&1, domain))
+      |> Enum.reject(&(&1 == domain))
+      |> Enum.uniq()
+
+    [domain | expanded]
   end
 
   @doc """
@@ -609,7 +736,8 @@ defmodule Defdo.Cloudflare.DDNS do
   def get_cloudflare_key(key, default \\ "")
 
   def get_cloudflare_key(key, default) do
-    Application.get_env(:defdo_ddns, Cloudflare)
+    :defdo_ddns
+    |> Application.get_env(Cloudflare, [])
     |> Keyword.get(key, default)
   end
 
@@ -637,10 +765,10 @@ defmodule Defdo.Cloudflare.DDNS do
     end
   end
 
-  defp plan_updates_for_group(records, desired_content) do
+  defp plan_updates_for_group(records, desired_content, opts) do
     planned_updates =
       Enum.map(records, fn record ->
-        desired_proxied = resolve_proxied_value(record)
+        desired_proxied = resolve_proxied_value(record, opts)
         desired_ttl = resolve_ttl(record, desired_proxied)
         build_update_plan(record, desired_content, desired_proxied, desired_ttl)
       end)
@@ -814,8 +942,7 @@ defmodule Defdo.Cloudflare.DDNS do
     case get_config_string(config, "domain") do
       nil -> :ok
       "" -> :ok
-      ^domain -> :ok
-      _other -> :skip
+      scope -> if String.downcase(scope) == String.downcase(domain), do: :ok, else: :skip
     end
   end
 

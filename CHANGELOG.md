@@ -1,3 +1,104 @@
+# Unreleased
+
+## ⚠️ Upgrade notes
+
+- **Desired-state files seeded by 0.4.0–0.5.1.** This is the first release in
+  which the monitor converges `DDNS_DESIRED_STATE_PATH`. Files seeded by those
+  versions wrote `"proxied": false` on every CNAME that had no explicit value,
+  including ones that inherited `CLOUDFLARE_PROXY_A_RECORDS=true`. Before
+  upgrading a deployment that has this path set, remove `"proxied"` from those
+  entries (they will inherit `proxy_a_records` again) or set it explicitly —
+  otherwise the first cycle converges them to DNS-only, TTL 300. Deployments
+  without the path set are unaffected.
+- **Check the file for invalid names before upgrading.** Entries the API
+  accepted before hostname validation (e.g. `--help.<domain>`) will now be
+  attempted every cycle and fail. Remove them.
+
+## 🐞 Fixes
+
+- `get_cloudflare_key/2` returns its default when `config :defdo_ddns, Cloudflare`
+  is absent instead of raising. A host app embedding the package without that
+  config no longer crashes on first call, and the test suite no longer fails
+  depending on seed.
+- The zone SSL-mode check survives Cloudflare edge errors. It was the one call
+  that skipped the envelope check, so a 521 page raised `BadMapError` and
+  collapsed that domain's checkup result after its writes had already run.
+- Full-zone record listings are paginated (`per_page` sent explicitly,
+  `result_info.total_pages` followed). Inventory on a zone larger than one page
+  was partial: false "missing" records and undiscovered unmanaged ones.
+
+- Concurrent writes to the desired-state and adoption files no longer lose
+  updates. Parallel `POST /v1/dns/upsert` calls each read the file, added their
+  record and renamed a shared temp file over it; measured, 40 concurrent
+  declarations left 1 record. Writes are now serialized per file and use a
+  unique temp file.
+
+- The monitor and inventory now read the desired-state file. Records declared
+  by `POST /v1/dns/upsert` or accepted through adoption were written to the
+  file but never converged, and accepted records kept showing as unmanaged.
+  Domains that appear only in CNAME declarations are now processed too. A
+  malformed file skips the cycle; it never falls back to env.
+- A CNAME without an explicit `proxied` inherits `proxy_a_records` in the
+  desired-state file too, resolved on every read: the file stores no value for
+  it, so changing `proxy_a_records` later still applies. Seeding used to write
+  `proxied: false` (see the upgrade note).
+- Domains are matched case-insensitively: mapping keys and CNAME `domain`
+  values that differ only in case are one zone, processed once, and all their
+  hostnames sync.
+- `POST /v1/dns/upsert` rejects `fqdn`/`base_domain` values that are not valid
+  hostnames (RFC 1123 labels, `_` service labels, a leading `*` wildcard) with
+  `422`. A CLI invoked as `defdo dns add --help` had declared
+  `--help.defdo.ninja` into a production desired-state file.
+- `/ready` and `/v1/status` never write: they no longer seed a missing
+  desired-state file (reported as `pending_seed`).
+
+- A failed record listing no longer triggers auto-create. The monitor read a
+  failed listing as "record absent", so with `AUTO_CREATE_DNS_RECORDS=true` one
+  transient Cloudflare error could create duplicate A records; the cycle also
+  reported "Nothing to do" for it. The domain is now skipped with an error line.
+- `Monitor.checkup/1` takes a timeout (default 2 minutes). It used
+  `GenServer.call/2`'s 5 s default and exited callers on any slow cycle.
+
+## ✨ Features
+
+- Heartbeat: with `DDNS_HEARTBEAT_URL` set, one ping after each `ok` (and, by
+  default, `degraded`) cycle and none after `failed` ones, so a DDNS that stops
+  converging goes silent and the receiver alerts. Bounded by
+  `DDNS_HEARTBEAT_TIMEOUT_MS`; the URL is never logged.
+- `:telemetry` span events: `[:defdo_ddns, :cycle, ...]` per monitor cycle
+  (outcome, domains, consecutive failures) and `[:defdo_ddns, :http, :request, ...]`
+  per outbound request (service, operation, result, status). No hostnames,
+  URLs or tokens in metadata. `telemetry` is now a declared dependency (it was
+  already locked through Req).
+- `GET /ready`: readiness probe (no auth) that turns 503 with reason codes when
+  the record store or desired state is unavailable, the monitor is not running
+  or still starting, cycles keep failing (`DDNS_READY_MAX_CONSECUTIVE_FAILURES`,
+  default 3) or the last success is stale (`DDNS_READY_STALE_FACTOR` × interval,
+  default 3). `/health` stays the liveness probe.
+- `GET /v1/status` (operator token only): last cycle, readiness, intent source
+  and counts, record-store state, pending adoptions. No hostnames or addresses.
+- `Defdo.DDNS.monitor_status/0` / `Defdo.Cloudflare.Monitor.status/0`: the last
+  cycle's outcome (`ok`/`degraded`/`failed`), timings, domain count,
+  consecutive failures and last success. Read from ETS, so it answers while a
+  cycle runs. Carries no hostnames, addresses or tokens.
+- `DDNS_IPV4_LOOKUP_URLS` / `DDNS_IPV6_LOOKUP_URLS`: public-IP lookup providers
+  tried in order (defaults: icanhazip, then ipify), so one provider being down no
+  longer stops A/AAAA sync.
+
+## 🔒 Security
+
+- Adoption endpoints now require the operator token. A tenant client token
+  could list every undeclared host in the estate and accept or reject
+  adoption for domains outside its `allowed_base_domains`; it now gets 403.
+
+## 🧹 Internal
+
+- Every Cloudflare and IP-lookup request carries explicit Req options: 10 s
+  receive timeout, 5 s connect timeout, at most 2 retries. Overridable with
+  `config :defdo_ddns, :cloudflare_req_options`.
+- The monitor lists each zone once per cycle (plus one re-read only after a
+  write) instead of three listings per declared hostname.
+
 # 0.5.1
 
 ## 🐞 Fixes

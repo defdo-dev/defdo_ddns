@@ -198,10 +198,14 @@ defmodule Defdo.DDNS.DesiredState do
            "domain" => trimmed(get.("domain")) || "",
            "name" => name,
            "target" => target,
-           "proxied" => boolean(get.("proxied"), false),
+           # Absent means "inherit proxy_a_records", resolved when intent is
+           # read (Defdo.DDNS.Intent), exactly as env mode does. Baking a value
+           # in here would freeze today's default into every such record.
+           "proxied" => boolean(get.("proxied"), nil),
            "ttl" => ttl(get.("ttl"))
          }
-         |> Map.take(@cname_keys)}
+         |> Map.take(@cname_keys)
+         |> Map.reject(fn {_key, value} -> is_nil(value) end)}
     end
   end
 

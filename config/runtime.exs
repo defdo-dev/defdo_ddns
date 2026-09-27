@@ -24,7 +24,17 @@ config :defdo_ddns, Cloudflare,
     Defdo.ConfigHelper.parse_boolean_env("AUTO_CREATE_DNS_RECORDS", false),
   proxy_a_records: Defdo.ConfigHelper.parse_boolean_env("CLOUDFLARE_PROXY_A_RECORDS", false),
   proxy_exclude: Defdo.ConfigHelper.parse_list_env("CLOUDFLARE_PROXY_EXCLUDE", []),
-  cname_records: Defdo.ConfigHelper.parse_json_env("CLOUDFLARE_CNAME_RECORDS_JSON", [])
+  cname_records: Defdo.ConfigHelper.parse_json_env("CLOUDFLARE_CNAME_RECORDS_JSON", []),
+  ipv4_lookup_urls:
+    Defdo.ConfigHelper.parse_list_env("DDNS_IPV4_LOOKUP_URLS", [
+      "https://ipv4.icanhazip.com",
+      "https://api.ipify.org"
+    ]),
+  ipv6_lookup_urls:
+    Defdo.ConfigHelper.parse_list_env("DDNS_IPV6_LOOKUP_URLS", [
+      "https://ipv6.icanhazip.com",
+      "https://api6.ipify.org"
+    ])
 
 config :defdo_ddns, Defdo.DDNS.RecordStore,
   module: Defdo.DDNS.RecordStores.FileEtsStore,
@@ -44,6 +54,16 @@ config :defdo_ddns,
     Defdo.ConfigHelper.parse_boolean_env("DDNS_ENABLE_MONITOR", monitor_enabled_default),
   monitor_refetch_every_ms:
     Defdo.ConfigHelper.parse_integer_env("DDNS_REFETCH_EVERY_MS", :timer.minutes(5), min: 1_000)
+
+config :defdo_ddns, Defdo.DDNS.Health,
+  max_consecutive_failures:
+    Defdo.ConfigHelper.parse_integer_env("DDNS_READY_MAX_CONSECUTIVE_FAILURES", 3, min: 1),
+  stale_factor: Defdo.ConfigHelper.parse_integer_env("DDNS_READY_STALE_FACTOR", 3, min: 2)
+
+config :defdo_ddns, Defdo.DDNS.Heartbeat,
+  url: System.get_env("DDNS_HEARTBEAT_URL"),
+  timeout_ms: Defdo.ConfigHelper.parse_integer_env("DDNS_HEARTBEAT_TIMEOUT_MS", 5_000, min: 250),
+  send_on_degraded: Defdo.ConfigHelper.parse_boolean_env("DDNS_HEARTBEAT_ON_DEGRADED", true)
 
 config :defdo_ddns, Defdo.DDNS.API,
   enabled: Defdo.ConfigHelper.parse_boolean_env("DDNS_API_ENABLED", false),

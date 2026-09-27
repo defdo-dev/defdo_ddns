@@ -123,9 +123,17 @@ Checkup completed
 | `DDNS_RECORD_INIT_PATH` | ❌ No | `""` | Optional init snapshot path used when no runtime snapshot exists yet |
 | `DDNS_ALLOW_EMPTY_RECORDS` | ❌ No | `false` | Allow booting the record store with an empty runtime state (defaults to `true` in `test`) |
 | `DDNS_PERSIST_RUNTIME_RECORDS` | ❌ No | `false` | Persist runtime record changes back to the snapshot path |
+| `DDNS_DESIRED_STATE_PATH` | ❌ No | unset (disabled) | Desired-state file that becomes the only source of DNS intent. Suggested: `/var/lib/defdo_ddns/desired_state.json` |
 | `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | Legacy seed JSON for managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
 | `DDNS_ENABLE_MONITOR` | ❌ No | `true`** | Enable/disable background monitor process |
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
+| `DDNS_IPV4_LOOKUP_URLS` | ❌ No | `https://ipv4.icanhazip.com,https://api.ipify.org` | Public IPv4 lookup providers, tried in order until one answers |
+| `DDNS_IPV6_LOOKUP_URLS` | ❌ No | `https://ipv6.icanhazip.com,https://api6.ipify.org` | Public IPv6 lookup providers, tried in order until one answers |
+| `DDNS_READY_MAX_CONSECUTIVE_FAILURES` | ❌ No | `3` | `/ready` turns 503 after this many failed monitor cycles in a row |
+| `DDNS_READY_STALE_FACTOR` | ❌ No | `3` | `/ready` turns 503 when the last successful cycle is older than this × `DDNS_REFETCH_EVERY_MS` |
+| `DDNS_HEARTBEAT_URL` | ❌ No | unset (off) | Heartbeat ping URL (e.g. a defdo_status heartbeat). **Credential** — carries the receiver's token; never logged |
+| `DDNS_HEARTBEAT_TIMEOUT_MS` | ❌ No | `5000` | Heartbeat request timeout |
+| `DDNS_HEARTBEAT_ON_DEGRADED` | ❌ No | `true` | Also ping after cycles where some domains had errors |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
 | `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
 | `DDNS_API_TOKEN` | ⚠️ Conditional*** | - | Global API token fallback (single-client mode) |
@@ -199,6 +207,70 @@ Rules:
 - If a hostname is managed as CNAME, this app skips auto-creating `A` for that same name.
 - Treat this as a legacy seed only; prefer snapshot files or runtime APIs for ongoing edits.
 
+### Desired State File
+
+Set `DDNS_DESIRED_STATE_PATH` to move DNS intent (A/AAAA hostnames, CNAME
+records, `auto_create_missing_records`, `proxy_a_records`, `proxy_exclude`) out
+of environment variables and into one JSON file.
+
+- With the path set, the file is the **only** source of DNS intent for the
+  monitor and the adoption inventory. The `CLOUDFLARE_*` record variables only
+  seed the file when it does not exist yet.
+- The file is read once per monitor cycle: an edit takes effect on the next
+  cycle, no restart needed.
+- `POST /v1/dns/upsert` and accepted adoptions declare records into this file,
+  and the monitor converges them. Domains that appear only in CNAME entries are
+  processed too.
+- A malformed file stops convergence and logs
+  `Error - desired state unavailable, checkup skipped`. DDNS never falls back to
+  the environment, because that would bring back intent someone removed from
+  the file.
+- Without the path, behaviour is unchanged: intent comes from the environment
+  and the runtime record store.
+- A CNAME entry without `"proxied"` inherits `proxy_a_records` each time the
+  file is read. Files seeded by 0.4.0–0.5.1 wrote `"proxied": false` on such
+  entries; remove it where the record should inherit (see CHANGELOG upgrade
+  notes).
+
+### Telemetry
+
+DDNS emits `:telemetry` span events (`:start`, `:stop`, `:exception`). It
+attaches no handlers itself; wire them to your metrics sink. Metadata carries
+fixed strings, counts and status codes only — no hostnames, addresses, URLs or
+tokens.
+
+| Event | Measurements | Metadata |
+|---|---|---|
+| `[:defdo_ddns, :cycle, :stop]` | `duration` | `outcome` (`"ok"`/`"degraded"`/`"failed"`), `domains` (integer), `consecutive_failures` (integer) |
+| `[:defdo_ddns, :http, :request, :stop]` | `duration` | `service` (`:cloudflare` \| `:ip_lookup`), `operation` (string, below), `result` (`:ok` \| `:error`), `status` (integer HTTP status or `nil` on transport error) |
+
+`operation` values: `"get_zone_id"`, `"list_dns_records"` (one event per page),
+`"get_zone_ssl_mode"`, `"apply_update"`, `"create_dns_record"`, `"public_ip_ipv4"`,
+`"public_ip_ipv6"`. `duration` is in native time units.
+
+```elixir
+:telemetry.attach_many("ddns-metrics", [
+  [:defdo_ddns, :cycle, :stop],
+  [:defdo_ddns, :http, :request, :stop]
+], &MyApp.Metrics.handle_event/4, nil)
+```
+
+### Heartbeat
+
+With `DDNS_HEARTBEAT_URL` set, the monitor sends one GET to it after each
+finished cycle, so the receiver can alert when pings stop:
+
+- cycle `ok` → ping;
+- cycle `degraded` (some domains had errors) → ping, unless
+  `DDNS_HEARTBEAT_ON_DEGRADED=false`;
+- cycle `failed` (nothing could be processed) → **no ping**. A DDNS that cannot
+  converge goes silent on purpose.
+
+A slow or failing receiver never delays a cycle by more than
+`DDNS_HEARTBEAT_TIMEOUT_MS` and never affects DNS. On the receiver, use a
+period slightly longer than `DDNS_REFETCH_EVERY_MS` (e.g. 12 minutes for the
+5-minute default).
+
 ### Optional HTTP API (Bandit)
 
 This project can expose a lightweight HTTP API using Bandit.
@@ -224,10 +296,38 @@ Multi-tenant-light mode with client credentials:
 Endpoints:
 
 - `GET /health` returns `{ "status": "ok" }`.
+- `GET /ready` (no auth) is the readiness probe: `200 {"status":"ready"}`, or
+  `503 {"status":"not_ready","reasons":[...]}` with codes
+  `record_store_unavailable`, `desired_state_unavailable`, and — when the
+  monitor is enabled — `monitor_not_running`, `starting`,
+  `consecutive_failures`, `stale`. `/health` stays the liveness probe.
+- `GET /v1/status` (operator token only; client tokens get `403`) returns the
+  last cycle (`monitor`: outcome, timings, consecutive failures, last success),
+  `ready` + `reasons`, the intent source and counts (`desired_state`), the
+  record store state and pending adoptions. Counts and timestamps only — no
+  hostnames, addresses or tokens.
+
+  Kubernetes probes:
+
+  ```yaml
+  livenessProbe:
+    httpGet: { path: /health, port: 4050 }
+  readinessProbe:
+    httpGet: { path: /ready, port: 4050 }
+    periodSeconds: 10
+    failureThreshold: 3
+  ```
+
 - `POST /v1/dns/upsert` upserts a CNAME record for a FQDN under a base zone.
   Send `"update_existing": false` for create-or-declare behavior: a missing
   record is created, an exact record is declared without mutation, and a
   mismatched existing CNAME returns `409 dns_conflict`.
+- `GET /v1/adoption`, `POST /v1/adoption/refresh`,
+  `POST /v1/adoption/:id/accept|reject` manage records found in Cloudflare but
+  not declared here. **Operator only:** they require the global token
+  (`DDNS_API_TOKEN`); client tokens from `DDNS_API_CLIENTS_JSON` get `403`.
+  A deployment that configures only clients has no HTTP adoption access until
+  it also sets `DDNS_API_TOKEN`.
 
 Auth headers:
 

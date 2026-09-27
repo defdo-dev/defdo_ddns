@@ -51,6 +51,15 @@ defmodule Defdo.Cloudflare.EdgeErrorTest do
       assert log =~ "521"
     end
 
+    test "get_zone_ssl_mode/1 returns nil instead of raising" do
+      stub_edge_error()
+
+      log = capture_log(fn -> assert DDNS.get_zone_ssl_mode("zone-123") == nil end)
+
+      assert log =~ "get_zone_ssl_mode"
+      assert log =~ "521"
+    end
+
     test "list_dns_records/2 returns [] instead of raising" do
       stub_edge_error()
 

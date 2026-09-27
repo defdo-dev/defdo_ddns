@@ -39,6 +39,8 @@ defmodule Defdo.DDNS.MixProject do
       {:req, "~> 0.6"},
       {:plug, "~> 1.18"},
       {:bandit, "~> 1.5"},
+      # Already locked through req/finch; declared because DDNS emits events itself.
+      {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
   end

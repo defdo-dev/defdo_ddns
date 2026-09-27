@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-09-26)** by guides/slices/ddns-service-hardening/10-heartbeat-after-cycle.md. Do not execute it.
+
 # Slice 01 - Heartbeat Emitter
 
 ## Goal
