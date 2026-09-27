@@ -287,7 +287,13 @@ The status map contains no hostnames, IPs or tokens — keep it that way.
 `test/ddns_monitor_cycle_test.exs` (`async: false`). Setup: `Req.Test` plug
 default, `:cloudflare_req_options` → `retry: false`, Cloudflare env
 `auth_token: "t", ipv4_lookup_urls: ["https://ip.test"], domain_mappings: %{"example.com" => ["www", "api"]}, aaaa_domain_mappings: %{}, auto_create_missing_records: true, proxy_a_records: false`,
-desired-state disabled; stop any running `Monitor` in `on_exit`; restore env.
+desired-state disabled; restore env. Start the monitor only with `start_supervised!/1`.
+The monitor calls Cloudflare from **its own process**, where stubs owned by the
+test process are invisible: call `Req.Test.set_req_test_to_shared()` in setup
+and `Req.Test.set_req_test_to_private()` in `on_exit` (Req 0.6.3 API,
+`deps/req/lib/req/test.ex:623,634`). Without it every monitor-process test sees
+a failed cycle. `conn.request_path` is `nil` for a URL with no path
+(`https://ip.test`) — record `conn.request_path || "/"`.
 A request log `Agent` records `{method, request_path}` for every stub call. The
 stub routes: `host == "ip.test"` → `"203.0.113.7"`; `GET /client/v4/zones` →
 `[%{"id" => "z1"}]`; `GET .../settings/ssl` → strict; `GET .../dns_records` →
@@ -303,7 +309,7 @@ per-test.
   Result contains a line starting `"Error - unable to list DNS records for domain=example.com"`;
   **no** `POST` was logged. **This test must fail before Step 2** (today it
   POSTs A records); run it before Step 2 and note the failure in the commit body.
-- `"status reports the last cycle"` — `Monitor.start_link(refetch_every: :timer.hours(1))`,
+- `"status reports the last cycle"` — `start_supervised!({Monitor, refetch_every: :timer.hours(1)})` (never a bare `start_link`: the monitor is linked to the test process and a stop in `on_exit` races its exit),
   then `Monitor.checkup()`; `{:ok, s} = Monitor.status()`; `s["outcome"] == "ok"`,
   `s["consecutive_failures"] == 0`, `is_binary(s["last_success_at"])`,
   `is_integer(s["duration_ms"])`, `s["domains"] == 1`.

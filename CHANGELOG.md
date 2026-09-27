@@ -25,8 +25,19 @@
   Domains that appear only in CNAME declarations are now processed too. A
   malformed file skips the cycle; it never falls back to env.
 
+- A failed record listing no longer triggers auto-create. The monitor read a
+  failed listing as "record absent", so with `AUTO_CREATE_DNS_RECORDS=true` one
+  transient Cloudflare error could create duplicate A records; the cycle also
+  reported "Nothing to do" for it. The domain is now skipped with an error line.
+- `Monitor.checkup/1` takes a timeout (default 2 minutes). It used
+  `GenServer.call/2`'s 5 s default and exited callers on any slow cycle.
+
 ## ✨ Features
 
+- `Defdo.DDNS.monitor_status/0` / `Defdo.Cloudflare.Monitor.status/0`: the last
+  cycle's outcome (`ok`/`degraded`/`failed`), timings, domain count,
+  consecutive failures and last success. Read from ETS, so it answers while a
+  cycle runs. Carries no hostnames, addresses or tokens.
 - `DDNS_IPV4_LOOKUP_URLS` / `DDNS_IPV6_LOOKUP_URLS`: public-IP lookup providers
   tried in order (defaults: icanhazip, then ipify), so one provider being down no
   longer stops A/AAAA sync.
@@ -36,6 +47,8 @@
 - Every Cloudflare and IP-lookup request carries explicit Req options: 10 s
   receive timeout, 5 s connect timeout, at most 2 retries. Overridable with
   `config :defdo_ddns, :cloudflare_req_options`.
+- The monitor lists each zone once per cycle (plus one re-read only after a
+  write) instead of three listings per declared hostname.
 
 # 0.5.1
 

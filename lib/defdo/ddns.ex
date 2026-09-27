@@ -122,6 +122,13 @@ defmodule Defdo.DDNS do
     end
   end
 
+  @doc """
+  What the monitor's last cycle did: outcome, timings, consecutive failures.
+  `{:error, :not_running}` when the monitor is not started.
+  """
+  @spec monitor_status() :: {:ok, map()} | {:error, :not_running}
+  defdelegate monitor_status(), to: Monitor, as: :status
+
   defdelegate configured_domains(), to: CloudflareDDNS, as: :get_all_cloudflare_config_domains
   defdelegate records_to_monitor(domain), to: CloudflareDDNS
   defdelegate get_current_ipv4(), to: CloudflareDDNS
