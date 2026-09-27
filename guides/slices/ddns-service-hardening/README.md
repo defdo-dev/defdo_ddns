@@ -77,3 +77,17 @@ Candidate slices, not written:
   mechanical later.
 - Promotional `comment` on every created record (`ddns.ex:208-211`) — product
   decision, not a hardening concern.
+
+## Verified
+
+- Commit: b62e031 (branch `defdo-service-hardening`, slices H01–H07 as commits
+  31c5c12, d3d7876, c461d66, 1bbfa1f, 1e630fd, 934017d, b62e031)
+- Environment: fresh `git clone` of that commit into a scratch directory,
+  `mix deps.get` from `mix.lock`, Elixir 1.19.5 / OTP 28, macOS (darwin arm64)
+- `mix format --check-formatted`, `mix deps.unlock --check-unused`,
+  `mix compile --warnings-as-errors`: clean
+- `mix test`: 225 tests, 0 failures; seeds 0, 8, 12345: 0 failures each
+- Invariant self-test (07 Step 2): 5/5 failed under their violating edit, each
+  with its own message (recorded in the b62e031 commit body)
+- Before/after evidence per slice (each new acceptance test was run against the
+  pre-change code and failed): H02 6 tests, H03 2, H04 3, H05 8, H06 4.
