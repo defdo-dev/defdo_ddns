@@ -91,3 +91,21 @@ by slice 04 here. Do not execute the old one.
   with its own message (recorded in the b62e031 commit body)
 - Before/after evidence per slice (each new acceptance test was run against the
   pre-change code and failed): H02 6 tests, H03 2, H04 3, H05 8, H06 4.
+
+## Review findings fed back (2026-09-26)
+
+An adversarial review of H01–H07 (fresh clone, diff only) returned NOT_READY.
+Each fix now lives in the step that produces the code; this table says what was
+missed and why, so the next author checks the same blind spot.
+
+| # | Missed | Why it was missed | Fix lives in |
+|---|---|---|---|
+| 1 | `:global.trans/4` is not re-entrant: a nested trans releases the outer lock | The author's scratch check proved "no deadlock" and read it as "re-entrant"; the test pinned the same weak property. A check must assert the property that matters (exclusion after the nested call), not a neighbour of it | 03 Step 1 (FileLock code + warning), 03 Tests |
+| 2 | Seeding the file turned inherited `proxied` into explicit `false` | Treated pre-existing code (`DesiredState` canonicalization) as correct because it predated the set; H04 made that code live for the first time | 04 Step 1 item 6, 04 Tests (parity) |
+| 3 | No monitor-level tests for rules the slice said to preserve | "Preserve X" was stated as prose, not as a check that fails under mutation | 04 Tests (mutation-named rule tests) |
+| 4 | `rollback/2` could reset a newer decision | Copied the rollback shape without asking what can change between two separately locked steps | 03 Step 3 |
+| 5 | `"domains" => length(lines)` wrong on whole-cycle failure | Specified a summary field without checking what the value is on every path | 05 Step 1 |
+| 6 | Case-sensitive domain de-dup (and then a case-sensitive scope match) | Identity of DNS names is case-insensitive; the slice compared strings | 04 Step 1 item 5, 04 Step 2 |
+| 7 | Env-only public accessors undocumented in file mode | D-04d kept them, but nobody told callers | `lib/defdo/ddns.ex` docs |
+
+Re-verified after the fixes: see the `fix(review)` commit.

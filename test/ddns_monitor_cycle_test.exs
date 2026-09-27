@@ -177,6 +177,8 @@ defmodule Defdo.DDNS.MonitorCycleTest do
     end)
 
     assert {:ok, %{"outcome" => "failed", "consecutive_failures" => 3}} = Monitor.status()
+    # Zones failed but the domain was processed: it counts.
+    assert {:ok, %{"domains" => 1}} = Monitor.status()
 
     set(b, :zones, :ok)
     capture_log(fn -> Monitor.checkup() end)
@@ -201,6 +203,22 @@ defmodule Defdo.DDNS.MonitorCycleTest do
     assert micros < 50_000
 
     Task.await(task, 5_000)
+  end
+
+  test "a cycle that never reaches a domain reports zero domains" do
+    dir = Path.join(System.tmp_dir!(), "ddns-cycle-#{System.unique_integer([:positive])}")
+    file = Path.join(dir, "desired_state.json")
+    File.mkdir_p!(dir)
+    File.write!(file, "{")
+    Application.put_env(:defdo_ddns, DesiredStateStore, path: file)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    capture_log(fn ->
+      start_supervised!({Monitor, refetch_every: :timer.hours(1)})
+      Monitor.checkup()
+    end)
+
+    assert {:ok, %{"outcome" => "failed", "domains" => 0}} = Monitor.status()
   end
 
   test "status without a monitor" do

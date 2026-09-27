@@ -24,6 +24,12 @@
   file but never converged, and accepted records kept showing as unmanaged.
   Domains that appear only in CNAME declarations are now processed too. A
   malformed file skips the cycle; it never falls back to env.
+- A CNAME without an explicit `proxied` keeps inheriting `proxy_a_records`
+  when intent moves into the desired-state file. Seeding used to write
+  `proxied: false`, so switching a deployment to the file would have flipped
+  those records to DNS-only.
+- CNAME `domain` values are matched to zones case-insensitively
+  (`Example.com` and `example.com` are one zone, processed once).
 
 - A failed record listing no longer triggers auto-create. The monitor read a
   failed listing as "record absent", so with `AUTO_CREATE_DNS_RECORDS=true` one

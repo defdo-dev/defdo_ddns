@@ -129,7 +129,13 @@ defmodule Defdo.DDNS do
   @spec monitor_status() :: {:ok, map()} | {:error, :not_running}
   defdelegate monitor_status(), to: Monitor, as: :status
 
+  # `configured_domains/0` and `records_to_monitor/1` describe the *env*
+  # configuration. With `DDNS_DESIRED_STATE_PATH` set, the monitor converges the
+  # desired-state file instead; use `Defdo.DDNS.Intent.load/0` for what it
+  # actually converges.
+  @doc "Domains from env A/AAAA mappings. Env only — see `Defdo.DDNS.Intent` for file mode."
   defdelegate configured_domains(), to: CloudflareDDNS, as: :get_all_cloudflare_config_domains
+  @doc "Hostnames from env A mappings. Env only — see `Defdo.DDNS.Intent` for file mode."
   defdelegate records_to_monitor(domain), to: CloudflareDDNS
   defdelegate get_current_ipv4(), to: CloudflareDDNS
   defdelegate get_current_ipv6(), to: CloudflareDDNS

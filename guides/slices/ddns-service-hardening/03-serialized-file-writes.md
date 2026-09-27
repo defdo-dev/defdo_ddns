@@ -58,22 +58,50 @@ defmodule Defdo.DDNS.FileLock do
   measured, 40 concurrent declarations left one record on disk.
 
   `:global.trans/4` is used because it needs no process of ours — the stores
-  are deliberately not in the supervision tree — and because it is re-entrant
-  for the same requester, so a locked `update/1` may call a locked `persist/1`.
-  The lock is released when the holder exits, so a crashed writer cannot wedge
-  the store.
+  are deliberately not in the supervision tree. The lock is released when the
+  holder exits, so a crashed writer cannot wedge the store.
+
+  `:global.trans/4` is **not** re-entrant: a nested `trans` on the same
+  resource deletes the lock when it returns, while the outer holder is still
+  inside. Re-entrancy is therefore tracked here, in the process dictionary: a
+  nested `with_lock/2` on a path this process already holds runs `fun`
+  directly. That matters because `DesiredStateStore.update/1` and `declare/1`
+  reach `seed/0` (which locks) from inside their own lock when the file is
+  missing.
   """
+
+  @held :defdo_ddns_file_locks_held
 
   @doc """
   Run `fun` while holding the lock for `path`. Returns `fun`'s result, or
   `{:error, {:lock_unavailable, path}}` if the lock could not be taken.
+  Re-entrant for the calling process.
   """
   @spec with_lock(Path.t(), (-> result)) :: result | {:error, {:lock_unavailable, Path.t()}}
         when result: term()
   def with_lock(path, fun) when is_binary(path) and is_function(fun, 0) do
     resource = {__MODULE__, Path.expand(path)}
+    held = Process.get(@held, MapSet.new())
 
-    case :global.trans({resource, self()}, fun, [node()], :infinity) do
+    if MapSet.member?(held, resource) do
+      fun.()
+    else
+      locked(resource, held, path, fun)
+    end
+  end
+
+  defp locked(resource, held, path, fun) do
+    trans = fn ->
+      Process.put(@held, MapSet.put(held, resource))
+
+      try do
+        fun.()
+      after
+        Process.put(@held, held)
+      end
+    end
+
+    case :global.trans({resource, self()}, trans, [node()], :infinity) do
       :aborted -> {:error, {:lock_unavailable, path}}
       result -> result
     end
@@ -90,6 +118,13 @@ end
 `:global.trans/4` signature (OTP kernel docs): `trans({ResourceId, LockRequesterId}, Fun, Nodes, Retries)`,
 returns `Fun`'s result or `aborted`. `[node()]` keeps the lock local; it works
 on a non-distributed node.
+
+**`:global.trans/4` is NOT re-entrant.** A nested `trans` on the same resource
+returns fine (no deadlock) but *deletes the lock* on return while the outer
+holder is still inside — verified with a probe process in review. The
+process-dictionary set above is what makes nesting safe; do not remove it.
+`update/1` and `declare/1` really do nest: their `load/0` seeds a missing file
+through `seed/0`, which locks.
 
 ## Step 2 — Lock every write path in `DesiredStateStore`
 
@@ -134,7 +169,17 @@ result).
   network I/O). Move `known = load()`, the reduce, and `save(entries)` inside
   `FileLock.with_lock(path(), fn -> ... end)`.
 - `decide/3`: whole body inside the lock.
-- `rollback/2`: whole body inside the lock.
+- `rollback/2`: whole body inside the lock, and restore **only if the stored
+  entry still equals the one this accept decided** — otherwise a decision made
+  between `decide/3` and the rollback would be reset to pending:
+
+  ```elixir
+        if Map.get(entries, id) == entry do
+          save(Map.put(entries, id, restored))
+        else
+          :ok
+        end
+  ```
 - `accept/2`: do **not** add a lock around the whole function — `decide/3` and
   `rollback/2` lock `adoption.json`, `promote/1` locks `desired_state.json`
   through `DesiredStateStore.declare/1`. Holding one while taking the other
@@ -191,7 +236,16 @@ restore all three and `File.rm_rf` the dir in `on_exit`.
 - `"no temp files are left behind"` — after the two runs above (same test or a
   third one repeating a 20-way declare), `Path.wildcard(Path.join(dir, "*.tmp"))`
   is `[]`.
-- `"the lock is re-entrant"` — `FileLock.with_lock(p, fn -> FileLock.with_lock(p, fn -> :inner end) end) == :inner`.
+- `"the lock is re-entrant"` — `FileLock.with_lock(p, fn -> FileLock.with_lock(p, fn -> :inner end) end) == :inner`
+  (proves no deadlock only — the next test proves the lock survives).
+- `"the lock is still held after a nested call returns"` — inside an outer
+  `with_lock`, run a nested `with_lock`, then from a spawned process call
+  `:global.set_lock({{Defdo.DDNS.FileLock, Path.expand(p)}, self()}, [node()], 0)`
+  and assert it returns `false`.
+- `"update and a concurrent declare both survive the lazy seed"` — env
+  seedable (`domain_mappings` set), file absent; `Task` running `update/1` with
+  a 200 ms function, `declare/1` started 50 ms later; both changes present
+  after. Fails with a non-re-entrant lock.
 - `"the lock excludes concurrent holders"` — 20 tasks each do
   `with_lock(p, fn -> n = :counters.add(c, 1, 1) ...` : increment an
   "inside" counter, read it, `Process.sleep(2)`, decrement; record the max

@@ -76,7 +76,8 @@ defmodule Defdo.Cloudflare.Monitor do
   @doc "Run one cycle in the caller, without the monitor process. Records no status."
   @spec checkup_once() :: list()
   def checkup_once do
-    execute_monitor() |> elem(1)
+    {_outcome, lines, _domains} = execute_monitor()
+    lines
   end
 
   @doc """
@@ -104,14 +105,15 @@ defmodule Defdo.Cloudflare.Monitor do
     started_mono = System.monotonic_time(:millisecond)
     {:ok, previous} = status()
 
-    {outcome, lines} =
+    {outcome, lines, domains} =
       :telemetry.span([:defdo_ddns, :cycle], %{}, fn ->
-        {outcome, lines} = result = execute_monitor()
+        {outcome, lines, domains} = execute_monitor()
+        result = {outcome, lines, domains}
 
         {result,
          %{
            outcome: outcome,
-           domains: length(lines),
+           domains: domains,
            consecutive_failures: next_failures(outcome, previous)
          }}
       end)
@@ -127,7 +129,7 @@ defmodule Defdo.Cloudflare.Monitor do
          "started_at" => DateTime.to_iso8601(started_at),
          "finished_at" => finished_at,
          "duration_ms" => System.monotonic_time(:millisecond) - started_mono,
-         "domains" => length(lines),
+         "domains" => domains,
          "consecutive_failures" => next_failures(outcome, previous),
          "last_success_at" => if(failed?, do: previous["last_success_at"], else: finished_at),
          "refetch_every_ms" => state.refetch_every
@@ -140,20 +142,22 @@ defmodule Defdo.Cloudflare.Monitor do
   defp next_failures("failed", previous), do: previous["consecutive_failures"] + 1
   defp next_failures(_outcome, _previous), do: 0
 
-  # Returns {cycle_outcome, lines}. `lines` is the public checkup shape: one
-  # list of messages per domain, or a single error message.
+  # Returns {cycle_outcome, lines, domains_processed}. `lines` is the public
+  # checkup shape: one list of messages per domain, or a single error message.
   defp execute_monitor do
     Logger.info("Executing checkup...")
 
     case Intent.load() do
       {:ok, intent} ->
         results = intent |> Intent.domains() |> Enum.map(&safe_process(&1, intent))
-        {cycle_outcome(Enum.map(results, &elem(&1, 0))), Enum.map(results, &elem(&1, 1))}
+
+        {cycle_outcome(Enum.map(results, &elem(&1, 0))), Enum.map(results, &elem(&1, 1)),
+         length(results)}
 
       {:error, reason} ->
         message = "Error - desired state unavailable, checkup skipped: #{inspect(reason)}"
         Logger.error(message)
-        {"failed", [message]}
+        {"failed", [message], 0}
     end
   rescue
     error ->
@@ -163,7 +167,7 @@ defmodule Defdo.Cloudflare.Monitor do
       # failed checkup is logged and retried on the next tick instead.
       message = "Error - checkup aborted: #{Exception.message(error)}"
       Logger.error(message)
-      {"failed", [message]}
+      {"failed", [message], 0}
   end
 
   defp cycle_outcome([]), do: "ok"

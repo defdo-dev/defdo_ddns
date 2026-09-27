@@ -26,6 +26,7 @@ defmodule Defdo.DDNS.MonitorDesiredStateTest do
 
     Application.put_env(:defdo_ddns, Cloudflare,
       auth_token: "test-token",
+      ipv4_lookup_urls: ["https://ip.test"],
       domain_mappings: %{},
       aaaa_domain_mappings: %{},
       cname_records: []
@@ -64,13 +65,16 @@ defmodule Defdo.DDNS.MonitorDesiredStateTest do
       posted? = Agent.get(requests, fn log -> Enum.any?(log, &(elem(&1, 0) == "POST")) end)
 
       cond do
+        conn.host == "ip.test" ->
+          Plug.Conn.resp(conn, 200, "203.0.113.7")
+
         conn.request_path == "/client/v4/zones" ->
           Req.Test.json(conn, %{"success" => true, "result" => [%{"id" => "z1"}]})
 
         String.ends_with?(conn.request_path, "/settings/ssl") ->
           Req.Test.json(conn, %{"success" => true, "result" => %{"value" => "strict"}})
 
-        conn.method == "POST" ->
+        conn.method in ["POST", "PUT"] ->
           Req.Test.json(conn, %{"success" => true, "result" => Map.put(body, "id", "new")})
 
         posted? ->
@@ -136,5 +140,93 @@ defmodule Defdo.DDNS.MonitorDesiredStateTest do
     assert {:ok, report} = Inventory.inventory("example.com")
     assert Enum.map(report["managed"], & &1["name"]) == ["foss.example.com"]
     assert report["unmanaged"] == []
+  end
+
+  defp writes(requests, method) do
+    requests
+    |> Agent.get(& &1)
+    |> Enum.filter(&(elem(&1, 0) == method))
+    |> Enum.map(&elem(&1, 2))
+  end
+
+  defp a_record(name, proxied) do
+    %{
+      "id" => "id-#{name}",
+      "type" => "A",
+      "name" => name,
+      "content" => "203.0.113.7",
+      "proxied" => proxied,
+      "ttl" => if(proxied, do: 1, else: 300)
+    }
+  end
+
+  describe "rules preserved through the intent (review finding 3)" do
+    test "CNAME-managed names never get A auto-create", %{state_path: file, requests: requests} do
+      write_file(file, %{
+        "domain_mappings" => %{"example.com" => ["app"]},
+        "auto_create_missing_records" => true,
+        "cname_records" => [%{"domain" => "example.com", "name" => "app", "target" => "@"}]
+      })
+
+      stub_cloudflare(requests, [])
+      capture_log(fn -> Monitor.checkup_once() end)
+
+      posts = writes(requests, "POST")
+      refute Enum.any?(posts, &(&1["type"] == "A" and &1["name"] == "app.example.com"))
+      assert Enum.any?(posts, &(&1["type"] == "CNAME" and &1["name"] == "app.example.com"))
+    end
+
+    test "A updates follow the intent's proxy policy", %{state_path: file, requests: requests} do
+      write_file(file, %{
+        "domain_mappings" => %{"example.com" => ["www", "internal"]},
+        "proxy_a_records" => true,
+        "proxy_exclude" => ["internal.example.com"]
+      })
+
+      stub_cloudflare(requests, [
+        a_record("example.com", false),
+        a_record("www.example.com", false),
+        a_record("internal.example.com", false)
+      ])
+
+      capture_log(fn -> Monitor.checkup_once() end)
+
+      puts = writes(requests, "PUT")
+      assert puts |> Enum.map(& &1["name"]) |> Enum.sort() == ["example.com", "www.example.com"]
+      assert Enum.all?(puts, &(&1["proxied"] == true and &1["ttl"] == 1))
+    end
+
+    test "auto-created A records use the proxy policy", %{state_path: file, requests: requests} do
+      write_file(file, %{
+        "domain_mappings" => %{"example.com" => []},
+        "proxy_a_records" => true,
+        "auto_create_missing_records" => true
+      })
+
+      stub_cloudflare(requests, [])
+      capture_log(fn -> Monitor.checkup_once() end)
+
+      assert [%{"type" => "A", "name" => "example.com", "proxied" => true, "ttl" => 1}] =
+               writes(requests, "POST")
+    end
+  end
+
+  describe "env/file parity (review finding 2)" do
+    test "a seeded CNAME keeps the inherited proxy default", %{requests: requests} do
+      # No file yet: the first read seeds it from env. A CNAME with no
+      # `proxied` inherits proxy_a_records in env mode and must in the file too.
+      Application.put_env(:defdo_ddns, Cloudflare,
+        auth_token: "test-token",
+        ipv4_lookup_urls: ["https://ip.test"],
+        proxy_a_records: true,
+        cname_records: [%{"domain" => "example.com", "name" => "app", "target" => "@"}]
+      )
+
+      stub_cloudflare(requests, [])
+      capture_log(fn -> Monitor.checkup_once() end)
+
+      assert [%{"type" => "CNAME", "name" => "app.example.com", "proxied" => true, "ttl" => 1}] =
+               writes(requests, "POST")
+    end
   end
 end

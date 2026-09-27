@@ -123,19 +123,20 @@ metadata and the ETS row can never disagree:
   defp next_failures(_outcome, _previous), do: 0
 ```
 
-In `run_cycle/1`, replace `{outcome, lines} = execute_monitor()` with:
+In `run_cycle/1`, replace `{outcome, lines, domains} = execute_monitor()` with:
 
 ```elixir
     {:ok, previous} = status()
 
-    {outcome, lines} =
+    {outcome, lines, domains} =
       :telemetry.span([:defdo_ddns, :cycle], %{}, fn ->
-        {outcome, lines} = result = execute_monitor()
+        {outcome, lines, domains} = execute_monitor()
+        result = {outcome, lines, domains}
 
         {result,
          %{
            outcome: outcome,
-           domains: length(lines),
+           domains: domains,
            consecutive_failures: next_failures(outcome, previous)
          }}
       end)

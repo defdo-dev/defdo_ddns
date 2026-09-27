@@ -942,8 +942,7 @@ defmodule Defdo.Cloudflare.DDNS do
     case get_config_string(config, "domain") do
       nil -> :ok
       "" -> :ok
-      ^domain -> :ok
-      _other -> :skip
+      scope -> if String.downcase(scope) == String.downcase(domain), do: :ok, else: :skip
     end
   end
 

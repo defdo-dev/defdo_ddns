@@ -83,6 +83,20 @@ defmodule Defdo.DDNS.IntentTest do
     assert Intent.domains(intent) == ["cname-only.test"]
   end
 
+  test "domains are de-duplicated case-insensitively, mapping spelling wins", %{
+    state_path: file
+  } do
+    write_file(file, %{
+      "domain_mappings" => %{"example.com" => ["www"]},
+      "cname_records" => [%{"domain" => "Example.com", "name" => "app", "target" => "@"}]
+    })
+
+    assert {:ok, intent} = Intent.load()
+    assert Intent.domains(intent) == ["example.com"]
+    # ...and the CNAME is still synced under the surviving spelling.
+    assert [%{"name" => "app.example.com"}] = Intent.cname_records(intent, "example.com")
+  end
+
   test "file cname entries normalize like store records", %{state_path: file} do
     write_file(file, %{
       "cname_records" => [

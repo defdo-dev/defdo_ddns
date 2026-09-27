@@ -144,6 +144,23 @@ Extract, do not duplicate. Each old function becomes a thin wrapper.
    which calls `resolve_proxied_value(record, opts)`. Keep the catch-all clause
    for `/3` too.
 
+5. `matches_domain_scope?/2` compares case-insensitively
+   (`String.downcase(scope) == String.downcase(domain)`), because
+   `Intent.domains/1` folds `Example.com` into `example.com`; an exact match
+   would silently drop that CNAME.
+
+6. **Keep the inherited proxy default when intent moves into the file.** In
+   env mode a CNAME without `proxied` inherits `proxy_a_records`
+   (`normalize_cname_records/3`'s `default_proxied`). `Defdo.DDNS.DesiredState.new/2`
+   canonicalized a missing `proxied` to `false`, so seeding the file from env
+   flipped those CNAMEs to DNS-only / TTL 300 on the next cycle. In
+   `desired_state.ex`, compute
+   `default_proxied = boolean(Map.get(cloudflare, "proxy_a_records"), false)`
+   in `new/2` and pass it to `normalize_cname_records/2` →
+   `normalize_cname_record/2`, using it as the `boolean(get.("proxied"), default_proxied)`
+   default. In `DesiredStateStore.entry_for/1`, write `"proxied" => record["proxied"]`
+   (nil allowed) instead of `record["proxied"] || false`.
+
 ## Step 2 — Create `Defdo.DDNS.Intent`
 
 `lib/defdo/ddns/intent.ex`:
@@ -210,8 +227,10 @@ defmodule Defdo.DDNS.Intent do
       |> Enum.map(&(Map.get(&1, "domain") || Map.get(&1, :domain)))
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
 
+    # Case-insensitive; mapping keys first so their spelling wins (hostnames/3
+    # looks mappings up by exact key).
     (Map.keys(intent["domain_mappings"]) ++ Map.keys(intent["aaaa_domain_mappings"]) ++ cname_domains)
-    |> Enum.uniq()
+    |> Enum.uniq_by(&String.downcase/1)
     |> Enum.sort()
   end
 
@@ -347,6 +366,11 @@ CHANGELOG `# Unreleased` → `## 🐞 Fixes`:
   `%{"domain" => "example.com", "name" => "app", "target" => "@", "proxied" => true, "ttl" => 1}`
   → `Intent.cname_records(intent, "example.com") == [%{"type" => "CNAME", "name" => "app.example.com", "content" => "example.com", "proxied" => true, "ttl" => 1}]`.
 
+- `"domains are de-duplicated case-insensitively, mapping spelling wins"` —
+  mapping `example.com` + cname entry `domain: "Example.com"` → domains
+  `["example.com"]` and `cname_records(intent, "example.com")` still has
+  `app.example.com`.
+
 `test/ddns_monitor_desired_state_test.exs` (`async: false`, `Req.Test` stubs,
 `:cloudflare_req_options` → `retry: false`; record every request as
 `{method, path, decoded_body}` in an `Agent`):
@@ -364,6 +388,26 @@ CHANGELOG `# Unreleased` → `## 🐞 Fixes`:
 - `"inventory counts an accepted record as managed"` — file declares
   `foss.example.com`; live listing returns a CNAME `foss.example.com` →
   `Inventory.inventory("example.com")` has it under `"managed"`, `"unmanaged"` is `[]`.
+
+Same file, rules the slice says to preserve — each must fail under the named
+mutation (run it once):
+
+- `"CNAME-managed names never get A auto-create"` — file maps `example.com =>
+  ["app"]` and declares CNAME `app`; empty listing; `auto_create` on → no POST
+  of type `A` for `app.example.com`, a POST of type `CNAME` for it.
+  Mutation: the `MapSet.member?(ctx.cname_names, record_name)` clause → `false`.
+- `"A updates follow the intent's proxy policy"` — `proxy_a_records: true`,
+  `proxy_exclude: ["internal.example.com"]`, three live A records proxied
+  false → PUTs for `example.com` and `www.example.com` only, all
+  `proxied: true, ttl: 1`. Mutation: `Intent.proxy_opts(intent)` → a literal
+  `%{proxy_a_records: false, proxy_exclude: []}`.
+- `"auto-created A records use the proxy policy"` — empty listing,
+  `proxy_a_records: true`, auto-create → one POST `A example.com proxied: true ttl: 1`.
+  Mutation: `ctx.proxied` forced to `false`.
+- `"a seeded CNAME keeps the inherited proxy default"` — no file; env
+  `proxy_a_records: true` and a CNAME with no `proxied`; first cycle seeds the
+  file → POST `CNAME app.example.com proxied: true ttl: 1`. Mutation: the
+  `desired_state.ex` default back to `false`.
 
 ## Verification
 

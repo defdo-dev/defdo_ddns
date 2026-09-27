@@ -94,7 +94,9 @@ Internally, `safe_process/2` returns `{outcome, lines}` where outcome is
 `process/2` returns `{:failed, [message]}` from the zone-unresolved branch and
 from the new listing-failure branch (Step 2), and `{:done, lines}` at the end.
 
-`execute_monitor/1` (was `/0`) returns `{cycle_outcome, lines_per_domain}`:
+`execute_monitor/0` returns `{cycle_outcome, lines_per_domain, domains_processed}`
+— the count is `length(results)`, and `0` on the intent-error and rescue
+paths (using `length(lines)` reported 1 domain for a cycle that reached none):
 
 ```elixir
   defp execute_monitor do
@@ -103,18 +105,20 @@ from the new listing-failure branch (Step 2), and `{:done, lines}` at the end.
     case Defdo.DDNS.Intent.load() do
       {:ok, intent} ->
         results = intent |> Defdo.DDNS.Intent.domains() |> Enum.map(&safe_process(&1, intent))
-        {cycle_outcome(Enum.map(results, &elem(&1, 0))), Enum.map(results, &elem(&1, 1))}
+
+        {cycle_outcome(Enum.map(results, &elem(&1, 0))), Enum.map(results, &elem(&1, 1)),
+         length(results)}
 
       {:error, reason} ->
         message = "Error - desired state unavailable, checkup skipped: #{inspect(reason)}"
         Logger.error(message)
-        {"failed", [message]}
+        {"failed", [message], 0}
     end
   rescue
     error ->
       message = "Error - checkup aborted: #{Exception.message(error)}"
       Logger.error(message)
-      {"failed", [message]}
+      {"failed", [message], 0}
   end
 
   defp cycle_outcome([]), do: "ok"
@@ -232,7 +236,7 @@ and `handle_call(:checkup, ...)`:
   defp run_cycle(state) do
     started_at = DateTime.utc_now()
     started_mono = System.monotonic_time(:millisecond)
-    {outcome, lines} = execute_monitor()
+    {outcome, lines, domains} = execute_monitor()
     finished_at = DateTime.utc_now()
 
     previous = elem(status(), 1)
@@ -243,7 +247,7 @@ and `handle_call(:checkup, ...)`:
       "started_at" => DateTime.to_iso8601(started_at),
       "finished_at" => DateTime.to_iso8601(finished_at),
       "duration_ms" => System.monotonic_time(:millisecond) - started_mono,
-      "domains" => length(lines),
+      "domains" => domains,
       "consecutive_failures" => if(failed?, do: previous["consecutive_failures"] + 1, else: 0),
       "last_success_at" => if(failed?, do: previous["last_success_at"], else: DateTime.to_iso8601(finished_at)),
       "refetch_every_ms" => state.refetch_every
@@ -255,7 +259,7 @@ and `handle_call(:checkup, ...)`:
 
 `status/0` inside the monitor process always finds the row (init inserted it),
 so `elem(status(), 1)` is safe there. `checkup_once/0` (no process) calls
-`execute_monitor/0` and returns `elem(result, 1)`; it does **not** write status.
+`execute_monitor/0` and returns the `lines` element; it does **not** write status.
 
 Add `defdelegate monitor_status(), to: Defdo.Cloudflare.Monitor, as: :status`
 to `Defdo.DDNS` with a `@doc` line.
@@ -322,6 +326,8 @@ per-test.
   (`Monitor.checkup()`), then `Task.async(fn -> Monitor.checkup() end)`,
   `Process.sleep(50)`, and `{micros, {:ok, _}} = :timer.tc(&Monitor.status/0)`;
   assert `micros < 50_000`. `Task.await(task, 5_000)`.
+- `"a cycle that never reaches a domain reports zero domains"` — malformed
+  desired-state file → `{"outcome" => "failed", "domains" => 0}`.
 - `"status without a monitor"` — no monitor running → `{:error, :not_running}`.
 - `"checkup accepts a timeout"` — `Code.ensure_loaded!(Defdo.Cloudflare.Monitor)`,
   `function_exported?(Defdo.Cloudflare.Monitor, :checkup, 1)`.

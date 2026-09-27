@@ -69,9 +69,12 @@ defmodule Defdo.DDNS.Intent do
       |> Enum.map(&(Map.get(&1, "domain") || Map.get(&1, :domain)))
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
 
+    # Case-insensitive: `Example.com` in a CNAME entry is the same zone as a
+    # mapping key `example.com`. Mapping keys come first so their spelling wins
+    # (hostnames/3 looks mappings up by that exact key).
     (Map.keys(intent["domain_mappings"]) ++
        Map.keys(intent["aaaa_domain_mappings"]) ++ cname_domains)
-    |> Enum.uniq()
+    |> Enum.uniq_by(&String.downcase/1)
     |> Enum.sort()
   end
 

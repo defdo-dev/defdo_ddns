@@ -224,7 +224,8 @@ defmodule Defdo.DDNS.DesiredStateStore do
       "domain" => record["domain"] || "",
       "name" => record["name"],
       "target" => record["content"] || "@",
-      "proxied" => record["proxied"] || false,
+      # nil inherits the document's proxy_a_records when canonicalized.
+      "proxied" => record["proxied"],
       "ttl" => record["ttl"] || 1
     }
   end

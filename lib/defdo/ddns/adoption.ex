@@ -141,7 +141,15 @@ defmodule Defdo.DDNS.Adoption do
           "note" => nil
         })
 
-      save(Map.put(load(), id, restored))
+      entries = load()
+
+      # Only undo our own decision. If the entry changed between the decide and
+      # this rollback (someone decided it again), leave their decision alone.
+      if Map.get(entries, id) == entry do
+        save(Map.put(entries, id, restored))
+      else
+        :ok
+      end
     end)
   end
 

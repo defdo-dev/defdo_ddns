@@ -110,6 +110,57 @@ defmodule Defdo.DDNS.ConcurrentWritesTest do
              :inner
   end
 
+  test "the lock is still held after a nested call returns", %{dir: dir} do
+    # :global.trans/4 deletes the lock when a nested trans returns; FileLock
+    # must not nest it. Probe from another process with zero retries.
+    path = Path.join(dir, "lock-target")
+    resource = {FileLock, Path.expand(path)}
+    parent = self()
+
+    FileLock.with_lock(path, fn ->
+      FileLock.with_lock(path, fn -> :inner end)
+
+      spawn(fn -> send(parent, {:probe, :global.set_lock({resource, self()}, [node()], 0)}) end)
+
+      assert_receive {:probe, false}, 1_000
+    end)
+  end
+
+  test "update and a concurrent declare both survive the lazy seed" do
+    # File missing and env seedable: update/1 -> load/0 -> seed/0 locks again
+    # inside update's lock. Before re-entrancy was tracked, the nested lock's
+    # release let this declare run mid-update and be overwritten.
+    Application.put_env(:defdo_ddns, Cloudflare, domain_mappings: %{"example.com" => ["www"]})
+
+    updater =
+      Task.async(fn ->
+        DesiredStateStore.update(fn doc ->
+          Process.sleep(200)
+          put_in(doc, ["cloudflare", "aaaa_domain_mappings"], %{"example.com" => ["www"]})
+        end)
+      end)
+
+    Process.sleep(50)
+
+    declarer =
+      Task.async(fn ->
+        DesiredStateStore.declare(%{
+          "domain" => "example.com",
+          "name" => "late.example.com",
+          "content" => "example.com",
+          "proxied" => true,
+          "ttl" => 1
+        })
+      end)
+
+    assert {:ok, _} = Task.await(updater, 5_000)
+    assert {:ok, _} = Task.await(declarer, 5_000)
+
+    assert {:ok, doc} = DesiredStateStore.load()
+    assert doc["cloudflare"]["aaaa_domain_mappings"] == %{"example.com" => ["www"]}
+    assert Enum.any?(doc["cloudflare"]["cname_records"], &(&1["name"] == "late.example.com"))
+  end
+
   test "the lock excludes concurrent holders", %{dir: dir} do
     path = Path.join(dir, "lock-target")
     inside = :counters.new(1, [])
