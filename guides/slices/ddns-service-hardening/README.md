@@ -17,8 +17,7 @@ access (slice 06, a security fix). Per `defdo-slice-authoring` a purely internal
 set says so here instead of carrying a `product.md`.
 
 Phase 2 (readiness/status endpoint, telemetry, heartbeat wiring) **does** change
-what an operator sees. Its scenarios are drafted in `product.md`, which is
-**not approved**. No phase 2 slice exists until the owner approves it.
+what an operator sees. Its scenarios are in `product.md`, approved 2026-09-26.
 
 ## Why — defects found in the read (evidence in `00-conventions.md`)
 
@@ -55,16 +54,17 @@ sequential.
 `ddns-desired-state-file/02-monitor-consumes-desired-state.md` is **superseded**
 by slice 04 here. Do not execute the old one.
 
-## Phase 2 — blocked on `product.md` approval
+## Phase 2 — operability (product.md approved 2026-09-26)
 
-Candidate slices, not written:
+| Slice | Title | Serves | Depends on |
+|---|---|---|---|
+| `08-status-and-readiness.md` | `/ready` probe and operator-only `GET /v1/status` | P-01, P-02 | 05, 06 |
+| `09-telemetry-events.md` | `:telemetry` spans for cycles and outbound HTTP | P-04 | 05 |
+| `10-heartbeat-after-cycle.md` | ping after ok/degraded cycles, silence on failed | P-03 | 05 |
+| `11-verification-phase2.md` | scenarios over real HTTP + invariants | P-01..P-04 | 08–10 |
 
-- `/ready` + `GET /v1/status` (reads the cycle status from slice 05, the record
-  store status and `DesiredStateStore.status/0`).
-- `:telemetry` events per cycle and per Cloudflare call (`telemetry` 1.4.2 is
-  already in `mix.lock` through Req/Finch).
-- Wire `ddns-heartbeat/01` to fire from the cycle-completed point slice 05
-  creates, instead of from inside `execute_monitor/0`.
+08, 09 and 10 all touch the monitor or router lightly; run them sequentially
+(08 → 09 → 10) to avoid merge noise. `10` supersedes `ddns-heartbeat/01`.
 
 ## Out of scope (recorded residue)
 

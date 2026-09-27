@@ -1,14 +1,15 @@
 ---
 kind: product
 topic: ddns-service-hardening (phase 2 — operability)
-approved:
+approved: 2026-09-26 by owner (chat: "de momento vamos con ese product.md" — recommendations accepted for Q1–Q3)
 ---
 
 # DDNS as an operable service — product
 
-> **Status: DRAFT, not approved.** Phase 1 (slices 01–07) is internal and does
-> not depend on this document. No phase 2 slice will be written until the owner
-> answers the open questions and fills `approved:`.
+> **Status: APPROVED 2026-09-26.** The owner accepted the recommendations for
+> Q1–Q3 (see `## Decisions`). Q4 is an external dependency, not a product
+> choice: P-03's code ships disabled by default and waits on defdo_status being
+> deployed. Phase 2 slices: `08`–`11`.
 
 ## Who and why
 
@@ -90,9 +91,32 @@ Done when: cycle and Cloudflare-call health can be graphed over time.
 - Deleting unmanaged records (still excluded, as in the adoption set).
 - Multi-node / HA DDNS. The locks from H03 are node-local by design.
 
-## Open questions
+## Decisions
 
-These change scenarios; the document is not approvable until each has an answer.
+Recorded from the owner's approval. Each was an open question; the reasoning
+is kept so it is not reopened by accident.
+
+- **Q1 → B.** `/ready` fails on process problems (record store not running,
+  monitor enabled but not running, intent not loadable) **and** on convergence
+  problems: `consecutive_failures >= 3` or last success older than
+  3 × `DDNS_REFETCH_EVERY_MS` (both configurable). Before the first cycle
+  finishes, `/ready` is 503 (`starting`). With the monitor disabled
+  (`DDNS_ENABLE_MONITOR=false`), convergence checks are skipped. Accepted
+  trade-off: while Cloudflare is failing, K3s removes the pod from the Service,
+  so `POST /v1/dns/upsert` and adoption decisions are unreachable through it.
+- **Q2 → operator token.** `GET /v1/status` requires `DDNS_API_TOKEN` (auth
+  mode `:token`), as the adoption routes do since H06; client tokens get 403.
+  `/ready` and `/health` are unauthenticated (probes carry no token) and return
+  no detail beyond `status` and short reason codes.
+- **Q3 → A.** `:telemetry` events only; no exporter and no new HTTP endpoint.
+  P-04 is "done" when the events exist and are documented; wiring a sink is
+  deployment work.
+- **Q4 → external.** The heartbeat ships behind `DDNS_HEARTBEAT_URL` (unset =
+  off). Deploying defdo_status and creating the monitor stays outside this repo.
+
+## Open questions (answered — see Decisions)
+
+Kept as asked, for the record.
 
 - **Q1 — What makes `/ready` fail?** Option A: only process readiness (record
   store loaded, monitor started, intent loadable). Option B: A **plus** "last
