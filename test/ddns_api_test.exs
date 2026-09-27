@@ -534,6 +534,7 @@ defmodule Defdo.DDNS.APITest do
 
   describe "adoption endpoints" do
     setup do
+      previous_api = Application.get_env(:defdo_ddns, Defdo.DDNS.API)
       previous_adoption = Application.get_env(:defdo_ddns, Defdo.DDNS.Adoption)
       previous_desired = Application.get_env(:defdo_ddns, Defdo.DDNS.DesiredStateStore)
 
@@ -576,6 +577,7 @@ defmodule Defdo.DDNS.APITest do
         File.rm(adoption)
         File.rm(desired)
         restore(Defdo.DDNS.Adoption, previous_adoption)
+        restore(Defdo.DDNS.API, previous_api)
         restore(Defdo.DDNS.DesiredStateStore, previous_desired)
       end)
 
@@ -643,6 +645,71 @@ defmodule Defdo.DDNS.APITest do
     test "POST accept on an unknown id is 404" do
       conn = call(:post, "/v1/adoption/cname:nope.defdo.ninja/accept")
       assert conn.status == 404
+    end
+
+    defp with_client_configured do
+      Application.put_env(:defdo_ddns, Defdo.DDNS.API,
+        token: "secret",
+        clients: [
+          %{
+            "id" => "tenant-a",
+            "token" => "tenant-secret",
+            "allowed_base_domains" => ["defdo.ninja"]
+          }
+        ]
+      )
+    end
+
+    defp call_as_client(method, path, body \\ nil) do
+      conn = conn(method, path, body && Jason.encode!(body))
+      conn = if body, do: put_req_header(conn, "content-type", "application/json"), else: conn
+
+      conn
+      |> put_req_header("x-client-id", "tenant-a")
+      |> put_req_header("authorization", "Bearer tenant-secret")
+      |> Router.call([])
+    end
+
+    defp assert_forbidden(conn) do
+      assert conn.status == 403
+      assert %{"error" => "forbidden"} = Jason.decode!(conn.resp_body)
+    end
+
+    defp assert_still_pending do
+      assert Defdo.DDNS.Adoption.get("cname:foss.defdo.ninja")["state"] == "pending"
+    end
+
+    test "a client token cannot list adoption" do
+      with_client_configured()
+      assert_forbidden(call_as_client(:get, "/v1/adoption"))
+    end
+
+    test "a client token cannot accept, and nothing changes" do
+      with_client_configured()
+      assert_forbidden(call_as_client(:post, "/v1/adoption/cname:foss.defdo.ninja/accept"))
+      assert_still_pending()
+
+      assert {:ok, doc} = Defdo.DDNS.DesiredStateStore.load()
+      refute Enum.any?(doc["cloudflare"]["cname_records"], &(&1["name"] == "foss.defdo.ninja"))
+    end
+
+    test "a client token cannot reject" do
+      with_client_configured()
+      assert_forbidden(call_as_client(:post, "/v1/adoption/cname:foss.defdo.ninja/reject"))
+      assert_still_pending()
+    end
+
+    test "a client token cannot refresh" do
+      with_client_configured()
+
+      assert_forbidden(
+        call_as_client(:post, "/v1/adoption/refresh", %{"domain" => "defdo.ninja"})
+      )
+    end
+
+    test "the global token still works when clients are configured" do
+      with_client_configured()
+      assert call(:get, "/v1/adoption").status == 200
     end
   end
 end

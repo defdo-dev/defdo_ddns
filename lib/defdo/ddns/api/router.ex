@@ -52,24 +52,28 @@ defmodule Defdo.DDNS.API.Router do
   # DNS from here.
 
   get "/v1/adoption" do
-    with {:ok, _auth} <- authorize(conn) do
+    with {:ok, _auth} <- authorize_operator(conn) do
       state = adoption_state(conn)
       json(conn, 200, %{status: "ok", state: to_string(state), entries: Adoption.list(state)})
     else
       {:error, :unauthorized} -> json(conn, 401, %{status: "error", error: "unauthorized"})
+      {:error, :forbidden} -> json(conn, 403, %{status: "error", error: "forbidden"})
     end
   end
 
   # Discovery has no mix on a release image, so it needs an API entry point too —
   # otherwise the pending list can never be populated where DDNS actually runs.
   post "/v1/adoption/refresh" do
-    with {:ok, _auth} <- authorize(conn),
+    with {:ok, _auth} <- authorize_operator(conn),
          domain when is_binary(domain) <- conn.body_params["domain"],
          {:ok, result} <- Adoption.refresh(domain) do
       json(conn, 200, %{status: "ok", result: result, entries: Adoption.list(:pending)})
     else
       {:error, :unauthorized} ->
         json(conn, 401, %{status: "error", error: "unauthorized"})
+
+      {:error, :forbidden} ->
+        json(conn, 403, %{status: "error", error: "forbidden"})
 
       nil ->
         json(conn, 422, %{
@@ -106,7 +110,7 @@ defmodule Defdo.DDNS.API.Router do
   end
 
   defp decide(conn, id, fun) do
-    with {:ok, _auth} <- authorize(conn) do
+    with {:ok, _auth} <- authorize_operator(conn) do
       meta = Map.take(conn.body_params || %{}, ["by", "note"])
 
       case fun.(id, meta) do
@@ -124,6 +128,17 @@ defmodule Defdo.DDNS.API.Router do
       end
     else
       {:error, :unauthorized} -> json(conn, 401, %{status: "error", error: "unauthorized"})
+      {:error, :forbidden} -> json(conn, 403, %{status: "error", error: "forbidden"})
+    end
+  end
+
+  # Adoption decides what the whole estate converges; a tenant client scoped to
+  # its own base domains must not list or decide it.
+  defp authorize_operator(conn) do
+    case authorize(conn) do
+      {:ok, %{mode: :token} = auth} -> {:ok, auth}
+      {:ok, _client} -> {:error, :forbidden}
+      {:error, reason} -> {:error, reason}
     end
   end
 

@@ -42,6 +42,12 @@
   tried in order (defaults: icanhazip, then ipify), so one provider being down no
   longer stops A/AAAA sync.
 
+## 🔒 Security
+
+- Adoption endpoints now require the operator token. A tenant client token
+  could list every undeclared host in the estate and accept or reject
+  adoption for domains outside its `allowed_base_domains`; it now gets 403.
+
 ## 🧹 Internal
 
 - Every Cloudflare and IP-lookup request carries explicit Req options: 10 s

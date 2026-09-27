@@ -252,6 +252,12 @@ Endpoints:
   Send `"update_existing": false` for create-or-declare behavior: a missing
   record is created, an exact record is declared without mutation, and a
   mismatched existing CNAME returns `409 dns_conflict`.
+- `GET /v1/adoption`, `POST /v1/adoption/refresh`,
+  `POST /v1/adoption/:id/accept|reject` manage records found in Cloudflare but
+  not declared here. **Operator only:** they require the global token
+  (`DDNS_API_TOKEN`); client tokens from `DDNS_API_CLIENTS_JSON` get `403`.
+  A deployment that configures only clients has no HTTP adoption access until
+  it also sets `DDNS_API_TOKEN`.
 
 Auth headers:
 
