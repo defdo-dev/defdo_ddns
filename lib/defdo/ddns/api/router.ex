@@ -7,6 +7,7 @@ defmodule Defdo.DDNS.API.Router do
   alias Defdo.DDNS.API.AuthConfig
   alias Defdo.DDNS.API.AuthStore
   alias Defdo.DDNS.API.DNS
+  alias Defdo.DDNS.Health
 
   plug(Plug.Parsers,
     parsers: [:json],
@@ -19,6 +20,22 @@ defmodule Defdo.DDNS.API.Router do
 
   get "/health" do
     json(conn, 200, %{status: "ok"})
+  end
+
+  # Readiness probe: no auth (probes carry no token), no detail beyond reason codes.
+  get "/ready" do
+    case Health.readiness() do
+      {:ready, []} -> json(conn, 200, %{status: "ready"})
+      {:not_ready, reasons} -> json(conn, 503, %{status: "not_ready", reasons: reasons})
+    end
+  end
+
+  get "/v1/status" do
+    case authorize_operator(conn) do
+      {:ok, _auth} -> json(conn, 200, Map.put(Health.report(), "status", "ok"))
+      {:error, :forbidden} -> json(conn, 403, %{status: "error", error: "forbidden"})
+      {:error, :unauthorized} -> json(conn, 401, %{status: "error", error: "unauthorized"})
+    end
   end
 
   post "/v1/dns/upsert" do

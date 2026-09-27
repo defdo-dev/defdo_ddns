@@ -55,6 +55,11 @@ config :defdo_ddns,
   monitor_refetch_every_ms:
     Defdo.ConfigHelper.parse_integer_env("DDNS_REFETCH_EVERY_MS", :timer.minutes(5), min: 1_000)
 
+config :defdo_ddns, Defdo.DDNS.Health,
+  max_consecutive_failures:
+    Defdo.ConfigHelper.parse_integer_env("DDNS_READY_MAX_CONSECUTIVE_FAILURES", 3, min: 1),
+  stale_factor: Defdo.ConfigHelper.parse_integer_env("DDNS_READY_STALE_FACTOR", 3, min: 2)
+
 config :defdo_ddns, Defdo.DDNS.API,
   enabled: Defdo.ConfigHelper.parse_boolean_env("DDNS_API_ENABLED", false),
   port: api_port,

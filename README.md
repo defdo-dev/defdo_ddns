@@ -129,6 +129,8 @@ Checkup completed
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
 | `DDNS_IPV4_LOOKUP_URLS` | ❌ No | `https://ipv4.icanhazip.com,https://api.ipify.org` | Public IPv4 lookup providers, tried in order until one answers |
 | `DDNS_IPV6_LOOKUP_URLS` | ❌ No | `https://ipv6.icanhazip.com,https://api6.ipify.org` | Public IPv6 lookup providers, tried in order until one answers |
+| `DDNS_READY_MAX_CONSECUTIVE_FAILURES` | ❌ No | `3` | `/ready` turns 503 after this many failed monitor cycles in a row |
+| `DDNS_READY_STALE_FACTOR` | ❌ No | `3` | `/ready` turns 503 when the last successful cycle is older than this × `DDNS_REFETCH_EVERY_MS` |
 | `DDNS_API_ENABLED` | ❌ No | `false` | Enable embedded HTTP API (Bandit) |
 | `DDNS_API_PORT` | ❌ No | `4050` | HTTP API listen port |
 | `DDNS_API_TOKEN` | ⚠️ Conditional*** | - | Global API token fallback (single-client mode) |
@@ -248,6 +250,28 @@ Multi-tenant-light mode with client credentials:
 Endpoints:
 
 - `GET /health` returns `{ "status": "ok" }`.
+- `GET /ready` (no auth) is the readiness probe: `200 {"status":"ready"}`, or
+  `503 {"status":"not_ready","reasons":[...]}` with codes
+  `record_store_unavailable`, `desired_state_unavailable`, and — when the
+  monitor is enabled — `monitor_not_running`, `starting`,
+  `consecutive_failures`, `stale`. `/health` stays the liveness probe.
+- `GET /v1/status` (operator token only; client tokens get `403`) returns the
+  last cycle (`monitor`: outcome, timings, consecutive failures, last success),
+  `ready` + `reasons`, the intent source and counts (`desired_state`), the
+  record store state and pending adoptions. Counts and timestamps only — no
+  hostnames, addresses or tokens.
+
+  Kubernetes probes:
+
+  ```yaml
+  livenessProbe:
+    httpGet: { path: /health, port: 4050 }
+  readinessProbe:
+    httpGet: { path: /ready, port: 4050 }
+    periodSeconds: 10
+    failureThreshold: 3
+  ```
+
 - `POST /v1/dns/upsert` upserts a CNAME record for a FQDN under a base zone.
   Send `"update_existing": false` for create-or-declare behavior: a missing
   record is created, an exact record is declared without mutation, and a

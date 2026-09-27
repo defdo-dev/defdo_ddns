@@ -34,6 +34,13 @@
 
 ## ✨ Features
 
+- `GET /ready`: readiness probe (no auth) that turns 503 with reason codes when
+  the record store or desired state is unavailable, the monitor is not running
+  or still starting, cycles keep failing (`DDNS_READY_MAX_CONSECUTIVE_FAILURES`,
+  default 3) or the last success is stale (`DDNS_READY_STALE_FACTOR` × interval,
+  default 3). `/health` stays the liveness probe.
+- `GET /v1/status` (operator token only): last cycle, readiness, intent source
+  and counts, record-store state, pending adoptions. No hostnames or addresses.
 - `Defdo.DDNS.monitor_status/0` / `Defdo.Cloudflare.Monitor.status/0`: the last
   cycle's outcome (`ok`/`degraded`/`failed`), timings, domain count,
   consecutive failures and last success. Read from ETS, so it answers while a
