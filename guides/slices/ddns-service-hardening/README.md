@@ -109,3 +109,16 @@ missed and why, so the next author checks the same blind spot.
 | 7 | Env-only public accessors undocumented in file mode | D-04d kept them, but nobody told callers | `lib/defdo/ddns.ex` docs |
 
 Re-verified after the fixes: see the `fix(review)` commit.
+
+## Verified (phase 2)
+
+- Commit: fe76a6b (H08 b2a1cbe, H09 0e30491, H10 544dffd, H11 fe76a6b; review
+  fixes for phase 1 in fa69abd)
+- Environment: fresh `git clone` of that commit, `mix deps.get` from
+  `mix.lock`, Elixir 1.19.5 / OTP 28, macOS (darwin arm64)
+- `mix format --check-formatted`, `mix deps.unlock --check-unused`,
+  `mix compile --warnings-as-errors`: clean
+- `mix test`: 269 tests, 0 failures; seeds 0, 8, 12345: 0 failures each
+- Product scenarios P-01..P-04 over real HTTP against Bandit: pass
+- Invariant self-test: 3/3 failed under their violating edit (messages in the
+  fe76a6b commit body)
