@@ -10,6 +10,9 @@
   entries (they will inherit `proxy_a_records` again) or set it explicitly —
   otherwise the first cycle converges them to DNS-only, TTL 300. Deployments
   without the path set are unaffected.
+- **Check the file for invalid names before upgrading.** Entries the API
+  accepted before hostname validation (e.g. `--help.<domain>`) will now be
+  attempted every cycle and fail. Remove them.
 
 ## 🐞 Fixes
 
@@ -42,6 +45,10 @@
 - Domains are matched case-insensitively: mapping keys and CNAME `domain`
   values that differ only in case are one zone, processed once, and all their
   hostnames sync.
+- `POST /v1/dns/upsert` rejects `fqdn`/`base_domain` values that are not valid
+  hostnames (RFC 1123 labels, `_` service labels, a leading `*` wildcard) with
+  `422`. A CLI invoked as `defdo dns add --help` had declared
+  `--help.defdo.ninja` into a production desired-state file.
 - `/ready` and `/v1/status` never write: they no longer seed a missing
   desired-state file (reported as `pending_seed`).
 

@@ -185,10 +185,32 @@ defmodule Defdo.DDNS.API.DNS do
     value = get_string(params, field, nil)
 
     case normalize_hostname(value) do
-      nil -> {:error, {:validation, %{field => "can't be blank"}}}
-      hostname -> {:ok, hostname}
+      nil ->
+        {:error, {:validation, %{field => "can't be blank"}}}
+
+      hostname ->
+        if valid_hostname?(hostname),
+          do: {:ok, hostname},
+          else: {:error, {:validation, %{field => "is not a valid hostname"}}}
     end
   end
+
+  # RFC 1123 labels (letters, digits, hyphen; no leading/trailing hyphen,
+  # 1-63 chars), plus `_` for service labels such as `_acme-challenge`, and a
+  # leading `*` wildcard label. At least two labels, 253 chars max. Without
+  # this, a CLI invoked as `defdo dns add --help` declared `--help.defdo.ninja`
+  # into desired state, which every later cycle would try (and fail) to create.
+  @hostname_label ~r/\A[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\z/
+
+  defp valid_hostname?(hostname) do
+    labels = String.split(hostname, ".")
+
+    byte_size(hostname) <= 253 and length(labels) >= 2 and
+      labels |> Enum.with_index() |> Enum.all?(&valid_label?/1)
+  end
+
+  defp valid_label?({"*", 0}), do: true
+  defp valid_label?({label, _index}), do: Regex.match?(@hostname_label, label)
 
   defp get_boolean(params, key, default) when is_binary(key) do
     case fetch_param(params, key) do
