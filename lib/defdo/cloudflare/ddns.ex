@@ -340,18 +340,28 @@ defmodule Defdo.Cloudflare.DDNS do
   In fact this give the second parameter to execute the update.
   """
   @spec input_for_update_dns_records(list(), String.t() | map()) :: list()
-  def input_for_update_dns_records(records, local_ip) when is_binary(local_ip) do
-    input_for_update_dns_records(records, %{"A" => local_ip, "AAAA" => local_ip})
+  def input_for_update_dns_records(records, local_ips) do
+    input_for_update_dns_records(records, local_ips, env_proxy_opts())
   end
 
-  def input_for_update_dns_records(records, local_ips_by_type) when is_map(local_ips_by_type) do
+  @doc """
+  Same as `input_for_update_dns_records/2`, with the proxy policy passed in
+  instead of read from application env.
+  """
+  @spec input_for_update_dns_records(list(), String.t() | map(), proxy_opts()) :: list()
+  def input_for_update_dns_records(records, local_ip, opts) when is_binary(local_ip) do
+    input_for_update_dns_records(records, %{"A" => local_ip, "AAAA" => local_ip}, opts)
+  end
+
+  def input_for_update_dns_records(records, local_ips_by_type, opts)
+      when is_map(local_ips_by_type) do
     records
     |> Enum.group_by(&{&1["name"], &1["type"]})
     |> Enum.flat_map(fn {{name, type}, grouped_records} ->
       desired_ip = Map.get(local_ips_by_type, type)
 
       if is_binary(desired_ip) and desired_ip != "" do
-        {updates, skipped} = plan_updates_for_group(grouped_records, desired_ip)
+        {updates, skipped} = plan_updates_for_group(grouped_records, desired_ip, opts)
 
         if skipped != [] do
           skipped_ids = skipped_record_ids(skipped)
@@ -368,7 +378,7 @@ defmodule Defdo.Cloudflare.DDNS do
     end)
   end
 
-  def input_for_update_dns_records(_records, _local_ips_by_type), do: []
+  def input_for_update_dns_records(_records, _local_ips_by_type, _opts), do: []
 
   @doc """
   Check CNAME records that must be updated to match a desired record definition.
@@ -413,20 +423,25 @@ defmodule Defdo.Cloudflare.DDNS do
   except for hostnames matched by `CLOUDFLARE_PROXY_EXCLUDE`.
   """
   @spec resolve_proxied_value(map()) :: boolean()
-  def resolve_proxied_value(record) do
-    case get_cloudflare_key(:proxy_a_records, false) do
-      true ->
-        record_name = Map.get(record, "name", "")
+  def resolve_proxied_value(record), do: resolve_proxied_value(record, env_proxy_opts())
 
-        if proxy_excluded?(record_name) do
-          false
-        else
-          true
-        end
+  @spec resolve_proxied_value(map(), proxy_opts()) :: boolean()
+  def resolve_proxied_value(record, %{proxy_a_records: true, proxy_exclude: patterns}) do
+    not proxy_excluded?(Map.get(record, "name", ""), patterns)
+  end
 
-      false ->
-        Map.get(record, "proxied", false)
-    end
+  def resolve_proxied_value(record, _opts), do: Map.get(record, "proxied", false)
+
+  @typedoc "Proxy policy for A/AAAA planning."
+  @type proxy_opts :: %{proxy_a_records: boolean(), proxy_exclude: [String.t()]}
+
+  @doc "The proxy policy as configured in application env."
+  @spec env_proxy_opts() :: proxy_opts()
+  def env_proxy_opts do
+    %{
+      proxy_a_records: get_cloudflare_key(:proxy_a_records, false),
+      proxy_exclude: get_proxy_exclude_patterns()
+    }
   end
 
   @doc """
@@ -455,7 +470,13 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_proxy_exclude_patterns() :: list(String.t())
   def get_proxy_exclude_patterns do
-    get_cloudflare_key(:proxy_exclude, [])
+    normalize_proxy_exclude_patterns(get_cloudflare_key(:proxy_exclude, []))
+  end
+
+  @doc "Normalize a raw proxy-exclude value (list or comma/space string) into patterns."
+  @spec normalize_proxy_exclude_patterns(term()) :: list(String.t())
+  def normalize_proxy_exclude_patterns(value) do
+    value
     |> List.wrap()
     |> Enum.flat_map(fn
       value when is_binary(value) ->
@@ -592,15 +613,27 @@ defmodule Defdo.Cloudflare.DDNS do
   """
   @spec get_cname_records_for_domain(String.t()) :: list(map())
   def get_cname_records_for_domain(domain) when is_binary(domain) do
-    default_proxied = get_cloudflare_key(:proxy_a_records, false)
+    normalize_cname_records(
+      Defdo.DDNS.RecordStore.records(),
+      domain,
+      get_cloudflare_key(:proxy_a_records, false)
+    )
+  end
 
-    Defdo.DDNS.RecordStore.records()
+  def get_cname_records_for_domain(_domain), do: []
+
+  @doc """
+  Normalize raw CNAME definitions (record-store entries or desired-state file
+  entries) for one zone, as `get_cname_records_for_domain/1` returns them.
+  """
+  @spec normalize_cname_records(list(), String.t(), boolean()) :: list(map())
+  def normalize_cname_records(records, domain, default_proxied)
+      when is_list(records) and is_binary(domain) do
+    records
     |> Enum.filter(&(record_type(&1) == "CNAME"))
     |> Enum.flat_map(&normalize_cname_record_config(&1, domain, default_proxied))
     |> Enum.uniq_by(&{&1["name"], &1["content"], &1["proxied"], &1["ttl"]})
   end
-
-  def get_cname_records_for_domain(_domain), do: []
 
   @doc """
   Get subdomains specifically configured for a domain.
@@ -618,11 +651,21 @@ defmodule Defdo.Cloudflare.DDNS do
         []
 
       subdomains when is_list(subdomains) ->
-        subdomains
-        |> Enum.map(&normalize_subdomain(&1, domain))
-        |> Enum.reject(&(&1 == domain))
-        |> Enum.uniq()
+        domain |> expand_hostnames(subdomains) |> tl()
     end
+  end
+
+  @doc "Root domain plus normalized subdomains, as `records_to_monitor/2` returns them."
+  @spec expand_hostnames(String.t(), list()) :: [String.t()]
+  def expand_hostnames(domain, subdomains) when is_binary(domain) and is_list(subdomains) do
+    expanded =
+      subdomains
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&normalize_subdomain(&1, domain))
+      |> Enum.reject(&(&1 == domain))
+      |> Enum.uniq()
+
+    [domain | expanded]
   end
 
   @doc """
@@ -694,10 +737,10 @@ defmodule Defdo.Cloudflare.DDNS do
     end
   end
 
-  defp plan_updates_for_group(records, desired_content) do
+  defp plan_updates_for_group(records, desired_content, opts) do
     planned_updates =
       Enum.map(records, fn record ->
-        desired_proxied = resolve_proxied_value(record)
+        desired_proxied = resolve_proxied_value(record, opts)
         desired_ttl = resolve_ttl(record, desired_proxied)
         build_update_plan(record, desired_content, desired_proxied, desired_ttl)
       end)

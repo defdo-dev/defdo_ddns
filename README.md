@@ -123,6 +123,7 @@ Checkup completed
 | `DDNS_RECORD_INIT_PATH` | ❌ No | `""` | Optional init snapshot path used when no runtime snapshot exists yet |
 | `DDNS_ALLOW_EMPTY_RECORDS` | ❌ No | `false` | Allow booting the record store with an empty runtime state (defaults to `true` in `test`) |
 | `DDNS_PERSIST_RUNTIME_RECORDS` | ❌ No | `false` | Persist runtime record changes back to the snapshot path |
+| `DDNS_DESIRED_STATE_PATH` | ❌ No | unset (disabled) | Desired-state file that becomes the only source of DNS intent. Suggested: `/var/lib/defdo_ddns/desired_state.json` |
 | `CLOUDFLARE_CNAME_RECORDS_JSON` | ❌ No | `[]` | Legacy seed JSON for managed CNAME records (`name`, `target`, optional `proxied`, `ttl`, `domain`) |
 | `DDNS_ENABLE_MONITOR` | ❌ No | `true`** | Enable/disable background monitor process |
 | `DDNS_REFETCH_EVERY_MS` | ❌ No | `300000` | Monitor interval in milliseconds |
@@ -200,6 +201,27 @@ Rules:
 - If `proxied=true`, TTL is forced to `1` (Cloudflare Auto TTL).
 - If a hostname is managed as CNAME, this app skips auto-creating `A` for that same name.
 - Treat this as a legacy seed only; prefer snapshot files or runtime APIs for ongoing edits.
+
+### Desired State File
+
+Set `DDNS_DESIRED_STATE_PATH` to move DNS intent (A/AAAA hostnames, CNAME
+records, `auto_create_missing_records`, `proxy_a_records`, `proxy_exclude`) out
+of environment variables and into one JSON file.
+
+- With the path set, the file is the **only** source of DNS intent for the
+  monitor and the adoption inventory. The `CLOUDFLARE_*` record variables only
+  seed the file when it does not exist yet.
+- The file is read once per monitor cycle: an edit takes effect on the next
+  cycle, no restart needed.
+- `POST /v1/dns/upsert` and accepted adoptions declare records into this file,
+  and the monitor converges them. Domains that appear only in CNAME entries are
+  processed too.
+- A malformed file stops convergence and logs
+  `Error - desired state unavailable, checkup skipped`. DDNS never falls back to
+  the environment, because that would bring back intent someone removed from
+  the file.
+- Without the path, behaviour is unchanged: intent comes from the environment
+  and the runtime record store.
 
 ### Optional HTTP API (Bandit)
 

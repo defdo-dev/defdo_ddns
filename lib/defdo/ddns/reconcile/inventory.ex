@@ -19,6 +19,7 @@ defmodule Defdo.DDNS.Reconcile.Inventory do
   require Logger
 
   alias Defdo.Cloudflare.DDNS
+  alias Defdo.DDNS.Intent
   alias Defdo.DDNS.RecordSnapshot
 
   @managed_types ~w(A AAAA CNAME)
@@ -37,10 +38,11 @@ defmodule Defdo.DDNS.Reconcile.Inventory do
   """
   @spec inventory(String.t()) :: {:ok, report()} | {:error, term()}
   def inventory(domain) when is_binary(domain) do
-    with {:ok, zone_id} <- resolve_zone(domain),
-         {:ok, live} <- fetch_live(zone_id),
-         {:ok, declared} <- declared_records(domain) do
-      build_report(domain, live, declared)
+    # Intent first: a broken desired-state file must cost no Cloudflare call.
+    with {:ok, intent} <- Intent.load(),
+         {:ok, zone_id} <- resolve_zone(domain),
+         {:ok, live} <- fetch_live(zone_id) do
+      build_report(domain, live, declared_records(intent, domain))
     end
   end
 
@@ -69,31 +71,16 @@ defmodule Defdo.DDNS.Reconcile.Inventory do
     end
   end
 
-  # What DDNS says should exist, drawn from the same accessors the monitor uses
+  # What DDNS says should exist, from the same intent the monitor converges,
   # so the two can never disagree about what is declared.
-  defp declared_records(domain) do
-    a = declared_hostnames(domain, :domain_mappings) |> Enum.map(&{"A", &1})
-    aaaa = declared_hostnames(domain, :aaaa_domain_mappings) |> Enum.map(&{"AAAA", &1})
+  defp declared_records(intent, domain) do
+    a = intent |> Intent.hostnames(domain, :a) |> Enum.map(&{"A", &1})
+    aaaa = intent |> Intent.hostnames(domain, :aaaa) |> Enum.map(&{"AAAA", &1})
+    cname = intent |> Intent.cname_records(domain) |> Enum.map(&{"CNAME", &1["name"]})
 
-    cname =
-      domain
-      |> DDNS.get_cname_records_for_domain()
-      |> Enum.map(&{"CNAME", &1["name"]})
-
-    records =
-      (a ++ aaaa ++ cname)
-      |> Enum.reject(fn {_type, name} -> is_nil(name) or name == "" end)
-      |> Enum.map(fn {type, name} -> %{"type" => type, "name" => name} end)
-
-    {:ok, records}
-  end
-
-  defp declared_hostnames(domain, mapping_key) do
-    if DDNS.domain_configured?(domain, mapping_key) do
-      DDNS.records_to_monitor(domain, mapping_key)
-    else
-      []
-    end
+    (a ++ aaaa ++ cname)
+    |> Enum.reject(fn {_type, name} -> is_nil(name) or name == "" end)
+    |> Enum.map(fn {type, name} -> %{"type" => type, "name" => name} end)
   end
 
   # --- classification ---------------------------------------------------------

@@ -19,6 +19,12 @@
   declarations left 1 record. Writes are now serialized per file and use a
   unique temp file.
 
+- The monitor and inventory now read the desired-state file. Records declared
+  by `POST /v1/dns/upsert` or accepted through adoption were written to the
+  file but never converged, and accepted records kept showing as unmanaged.
+  Domains that appear only in CNAME declarations are now processed too. A
+  malformed file skips the cycle; it never falls back to env.
+
 ## ✨ Features
 
 - `DDNS_IPV4_LOOKUP_URLS` / `DDNS_IPV6_LOOKUP_URLS`: public-IP lookup providers

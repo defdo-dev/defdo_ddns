@@ -6,6 +6,8 @@ defmodule Defdo.Cloudflare.Monitor do
   import Defdo.Cloudflare.DDNS
   use GenServer
 
+  alias Defdo.DDNS.Intent
+
   defmodule State do
     @moduledoc false
     defstruct refetch_every: nil
@@ -57,8 +59,17 @@ defmodule Defdo.Cloudflare.Monitor do
   defp execute_monitor do
     Logger.info("Executing checkup...")
 
-    get_all_cloudflare_config_domains()
-    |> Enum.map(&safe_process/1)
+    case Intent.load() do
+      {:ok, intent} ->
+        intent
+        |> Intent.domains()
+        |> Enum.map(&safe_process(&1, intent))
+
+      {:error, reason} ->
+        message = "Error - desired state unavailable, checkup skipped: #{inspect(reason)}"
+        Logger.error(message)
+        [message]
+    end
   rescue
     error ->
       # Second line of defence. A checkup must never take the monitor down: the
@@ -70,8 +81,8 @@ defmodule Defdo.Cloudflare.Monitor do
       [message]
   end
 
-  defp safe_process(domain) do
-    process(domain)
+  defp safe_process(domain, intent) do
+    process(domain, intent)
   rescue
     error ->
       message = "Error - checkup failed for domain=#{domain}: #{Exception.message(error)}"
@@ -79,7 +90,7 @@ defmodule Defdo.Cloudflare.Monitor do
       [message]
   end
 
-  defp process(domain) do
+  defp process(domain, intent) do
     Logger.info("Processing domain: #{domain}")
     zone_id = get_zone_id(domain)
 
@@ -88,149 +99,115 @@ defmodule Defdo.Cloudflare.Monitor do
       Logger.error(message)
       [message]
     else
-      a_records_to_monitor =
-        if domain_configured?(domain, :domain_mappings) do
-          records_to_monitor(domain, :domain_mappings)
-        else
-          []
-        end
-
-      aaaa_records_to_monitor =
-        if domain_configured?(domain, :aaaa_domain_mappings) do
-          records_to_monitor(domain, :aaaa_domain_mappings)
-        else
-          []
-        end
-
-      a_record_name_set = MapSet.new(a_records_to_monitor)
-      aaaa_record_name_set = MapSet.new(aaaa_records_to_monitor)
-
-      local_ipv4 =
-        if MapSet.size(a_record_name_set) > 0 do
-          get_current_ipv4()
-        else
-          nil
-        end
-
-      local_ipv6 =
-        if MapSet.size(aaaa_record_name_set) > 0 do
-          get_current_ipv6()
-        else
-          nil
-        end
-
-      if MapSet.size(a_record_name_set) > 0 and is_nil(local_ipv4) do
-        Logger.error("Unable to detect public IPv4 address; A records cannot be synchronized")
-      end
-
-      if MapSet.size(aaaa_record_name_set) > 0 and is_nil(local_ipv6) do
-        Logger.warning(
-          "Unable to detect public IPv6 address; AAAA records will be skipped for this cycle"
-        )
-      end
-
-      configured_cname_records = get_cname_records_for_domain(domain)
-      cname_record_names = configured_cname_records |> Enum.map(& &1["name"]) |> MapSet.new()
-
-      dns_records_to_monitor =
-        a_records_to_monitor
-        |> Kernel.++(aaaa_records_to_monitor)
-        |> Kernel.++(MapSet.to_list(cname_record_names))
-        |> Enum.uniq()
-
-      auto_create_missing_records = get_cloudflare_key(:auto_create_missing_records)
-
-      # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
-      # of comma-separated name filtering (deprecated 2025-02-21)
-      online_dns_records =
-        dns_records_to_monitor
-        |> Enum.flat_map(fn record_name ->
-          records = list_dns_records(zone_id, name: record_name)
-
-          created_records =
-            maybe_create_missing_ip_records(
-              zone_id,
-              record_name,
-              records,
-              local_ipv4,
-              local_ipv6,
-              a_record_name_set,
-              aaaa_record_name_set,
-              cname_record_names,
-              auto_create_missing_records
-            )
-
-          records ++ created_records
-        end)
-
-      ip_dns_records =
-        online_dns_records
-        |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
-
-      ip_result =
-        ip_dns_records
-        |> input_for_update_dns_records(%{"A" => local_ipv4, "AAAA" => local_ipv6})
-        |> Enum.map(fn input ->
-          {success, result} = apply_update(zone_id, input)
-
-          message =
-            if success do
-              "Success - #{result["name"]} DNS record updated (ip=#{result["content"]}, proxied=#{result["proxied"]})"
-            else
-              "Error - #{inspect(input)}"
-            end
-
-          if success do
-            Logger.info(message)
-          else
-            Logger.error(message)
-          end
-
-          message
-        end)
-
-      cname_result = sync_cname_records(zone_id, configured_cname_records)
-      result = ip_result ++ cname_result
-
-      # Re-read records after updates to evaluate final state.
-      final_dns_records =
-        dns_records_to_monitor
-        |> Enum.flat_map(fn record_name -> list_dns_records(zone_id, name: record_name) end)
-        |> Enum.filter(&(&1["type"] in ~w(A AAAA CNAME)))
-
-      log_advanced_certificate_warnings(domain, final_dns_records)
-
-      ssl_mode = get_zone_ssl_mode(zone_id)
-      expected_proxied = get_cloudflare_key(:proxy_a_records, false)
-      posture = evaluate_domain_posture(final_dns_records, ssl_mode, expected_proxied)
-      posture_message = log_domain_posture(domain, posture)
-
-      result =
-        if result == [] do
-          message = "Nothing to do"
-          Logger.info(message)
-
-          [message, posture_message]
-        else
-          result ++ [posture_message]
-        end
-
-      Logger.info("Checkup completed")
-
-      result
+      sync_domain(domain, zone_id, intent)
     end
   end
 
-  defp create_missing_ip_records(
-         zone_id,
-         record_name,
-         local_ipv4,
-         local_ipv6,
-         a_record_name_set,
-         aaaa_record_name_set,
-         existing_records
-       ) do
-    proxied = get_cloudflare_key(:proxy_a_records, false)
+  defp sync_domain(domain, zone_id, intent) do
+    a_hostnames = Intent.hostnames(intent, domain, :a)
+    aaaa_hostnames = Intent.hostnames(intent, domain, :aaaa)
+    a_record_name_set = MapSet.new(a_hostnames)
+    aaaa_record_name_set = MapSet.new(aaaa_hostnames)
+
+    local_ipv4 = if MapSet.size(a_record_name_set) > 0, do: get_current_ipv4()
+    local_ipv6 = if MapSet.size(aaaa_record_name_set) > 0, do: get_current_ipv6()
+
+    if MapSet.size(a_record_name_set) > 0 and is_nil(local_ipv4) do
+      Logger.error("Unable to detect public IPv4 address; A records cannot be synchronized")
+    end
+
+    if MapSet.size(aaaa_record_name_set) > 0 and is_nil(local_ipv6) do
+      Logger.warning(
+        "Unable to detect public IPv6 address; AAAA records will be skipped for this cycle"
+      )
+    end
+
+    configured_cname_records = Intent.cname_records(intent, domain)
+    cname_record_names = configured_cname_records |> Enum.map(& &1["name"]) |> MapSet.new()
+
+    monitored_names =
+      (a_hostnames ++ aaaa_hostnames ++ MapSet.to_list(cname_record_names))
+      |> Enum.uniq()
+
+    ctx = %{
+      zone_id: zone_id,
+      ipv4: local_ipv4,
+      ipv6: local_ipv6,
+      a_names: a_record_name_set,
+      aaaa_names: aaaa_record_name_set,
+      cname_names: cname_record_names,
+      auto_create: intent["auto_create_missing_records"] == true,
+      proxied: intent["proxy_a_records"] == true
+    }
+
+    # Note: Making separate API calls for each DNS record due to Cloudflare API deprecation
+    # of comma-separated name filtering (deprecated 2025-02-21)
+    online_dns_records =
+      Enum.flat_map(monitored_names, fn record_name ->
+        records = list_dns_records(zone_id, name: record_name)
+        records ++ maybe_create_missing_ip_records(ctx, record_name, records)
+      end)
+
+    ip_result =
+      online_dns_records
+      |> Enum.filter(&(&1["type"] in ~w(A AAAA)))
+      |> input_for_update_dns_records(
+        %{"A" => local_ipv4, "AAAA" => local_ipv6},
+        Intent.proxy_opts(intent)
+      )
+      |> Enum.map(&apply_ip_update(zone_id, &1))
+
+    cname_result = sync_cname_records(zone_id, configured_cname_records)
+    result = ip_result ++ cname_result
+
+    # Re-read records after updates to evaluate final state.
+    final_dns_records =
+      monitored_names
+      |> Enum.flat_map(fn record_name -> list_dns_records(zone_id, name: record_name) end)
+      |> Enum.filter(&(&1["type"] in ~w(A AAAA CNAME)))
+
+    finish_domain(domain, zone_id, intent, final_dns_records, result)
+  end
+
+  defp apply_ip_update(zone_id, input) do
+    {success, result} = apply_update(zone_id, input)
+
+    message =
+      if success do
+        "Success - #{result["name"]} DNS record updated (ip=#{result["content"]}, proxied=#{result["proxied"]})"
+      else
+        "Error - #{inspect(input)}"
+      end
+
+    if success, do: Logger.info(message), else: Logger.error(message)
+
+    message
+  end
+
+  defp finish_domain(domain, zone_id, intent, final_dns_records, result) do
+    log_advanced_certificate_warnings(domain, final_dns_records, intent["proxy_exclude"])
+
+    ssl_mode = get_zone_ssl_mode(zone_id)
+    posture = evaluate_domain_posture(final_dns_records, ssl_mode, intent["proxy_a_records"])
+    posture_message = log_domain_posture(domain, posture)
+
+    result =
+      if result == [] do
+        message = "Nothing to do"
+        Logger.info(message)
+
+        [message, posture_message]
+      else
+        result ++ [posture_message]
+      end
+
+    Logger.info("Checkup completed")
+
+    result
+  end
+
+  defp create_missing_ip_records(ctx, record_name, existing_records) do
+    proxied = ctx.proxied
     ttl = if proxied, do: 1, else: 300
 
     existing_record_types =
@@ -243,15 +220,15 @@ defmodule Defdo.Cloudflare.Monitor do
       |> maybe_add_missing_record_type(
         "A",
         record_name,
-        a_record_name_set,
-        local_ipv4,
+        ctx.a_names,
+        ctx.ipv4,
         existing_record_types
       )
       |> maybe_add_missing_record_type(
         "AAAA",
         record_name,
-        aaaa_record_name_set,
-        local_ipv6,
+        ctx.aaaa_names,
+        ctx.ipv6,
         existing_record_types
       )
 
@@ -266,7 +243,7 @@ defmodule Defdo.Cloudflare.Monitor do
         "proxied" => proxied
       }
 
-      case create_dns_record(zone_id, record_data) do
+      case create_dns_record(ctx.zone_id, record_data) do
         {true, result} ->
           Logger.info(
             "Created DNS record: #{record_type} #{record_name} with promotional comment"
@@ -305,19 +282,9 @@ defmodule Defdo.Cloudflare.Monitor do
     end
   end
 
-  defp maybe_create_missing_ip_records(
-         zone_id,
-         record_name,
-         records,
-         local_ipv4,
-         local_ipv6,
-         a_record_name_set,
-         aaaa_record_name_set,
-         cname_record_names,
-         auto_create_missing_records
-       ) do
+  defp maybe_create_missing_ip_records(ctx, record_name, records) do
     cond do
-      MapSet.member?(cname_record_names, record_name) ->
+      MapSet.member?(ctx.cname_names, record_name) ->
         if Enum.empty?(records) do
           Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
 
@@ -328,25 +295,16 @@ defmodule Defdo.Cloudflare.Monitor do
 
         []
 
-      Enum.empty?(records) and auto_create_missing_records ->
+      Enum.empty?(records) and ctx.auto_create ->
         Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
-
-        create_missing_ip_records(
-          zone_id,
-          record_name,
-          local_ipv4,
-          local_ipv6,
-          a_record_name_set,
-          aaaa_record_name_set,
-          records
-        )
+        create_missing_ip_records(ctx, record_name, records)
 
       Enum.empty?(records) ->
         Logger.warning("DNS record '#{record_name}' not found in Cloudflare")
         Logger.info("Set AUTO_CREATE_DNS_RECORDS=true to auto-create missing records")
         []
 
-      not auto_create_missing_records ->
+      not ctx.auto_create ->
         []
 
       Enum.any?(records, &(&1["type"] == "CNAME")) ->
@@ -357,15 +315,7 @@ defmodule Defdo.Cloudflare.Monitor do
         []
 
       true ->
-        create_missing_ip_records(
-          zone_id,
-          record_name,
-          local_ipv4,
-          local_ipv6,
-          a_record_name_set,
-          aaaa_record_name_set,
-          records
-        )
+        create_missing_ip_records(ctx, record_name, records)
     end
   end
 
@@ -459,7 +409,7 @@ defmodule Defdo.Cloudflare.Monitor do
     summary
   end
 
-  defp log_advanced_certificate_warnings(domain, records) do
+  defp log_advanced_certificate_warnings(domain, records, patterns) do
     deep_hosts =
       records
       |> Enum.map(&Map.get(&1, "name"))
@@ -477,7 +427,7 @@ defmodule Defdo.Cloudflare.Monitor do
 
     excluded_deep_hosts =
       deep_hosts
-      |> Enum.filter(&proxy_excluded?/1)
+      |> Enum.filter(&proxy_excluded?(&1, patterns))
       |> Enum.uniq()
 
     if proxied_deep_hosts != [] do
