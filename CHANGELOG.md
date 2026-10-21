@@ -1,3 +1,12 @@
+# 0.5.3
+
+## 🔒 Security
+
+- Bumped `mint` 1.10.0 → 1.10.1 to fix EEF-CVE-2026-82672 /
+  GHSA-rj5m-69wp-cxq9 (MEDIUM): an unvalidated chunk-size line tail in the
+  Mint HTTP/1 client allowed response smuggling on pooled connections. Mint
+  carries every Cloudflare API call (req → finch → mint).
+
 # 0.5.2
 
 ## 🔒 Security
