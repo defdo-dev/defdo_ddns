@@ -1,3 +1,11 @@
+# 0.5.2
+
+## 🔒 Security
+
+- Bumped `bandit` 1.12.5 → 1.13.1 to fix EEF-CVE-2026-105659 (HIGH) and
+  EEF-CVE-2026-105660 (MEDIUM); `thousand_island` 1.5.0 → 1.6.0 and `hpax`
+  1.0.4 → 1.1.0 move with it.
+
 # 0.5.1
 
 ## 🐞 Fixes
